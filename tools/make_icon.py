@@ -6,7 +6,22 @@
 """
 from __future__ import annotations
 
+import sys
+
 from pathlib import Path
+
+
+def _force_utf8() -> None:
+    """Windows 控制台/CI 下强制 UTF-8 输出，避免中文打印触发 UnicodeEncodeError。"""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")     # type: ignore[union-attr]
+        except Exception:
+            pass
+
+
+_force_utf8()
+
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "assets" / "PaperDrill.ico"

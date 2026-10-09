@@ -7,6 +7,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+env:
+  PYTHONIOENCODING: utf-8
+  PYTHONUTF8: '1'
+
 jobs:
   test-and-build:
     runs-on: windows-latest
