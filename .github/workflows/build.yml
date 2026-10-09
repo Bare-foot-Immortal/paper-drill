@@ -11,6 +11,9 @@ env:
   PYTHONIOENCODING: utf-8
   PYTHONUTF8: '1'
 
+permissions:
+  contents: write
+
 jobs:
   test-and-build:
     runs-on: windows-latest
