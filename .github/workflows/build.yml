@@ -1,0 +1,53 @@
+name: build
+
+on:
+  push:
+    branches: [ main, master ]
+    tags: [ 'v*' ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test-and-build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: 生成合成示例题库与测试夹具
+        run: python tools/make_samples.py
+
+      - name: 运行测试
+        env:
+          PYTHONIOENCODING: utf-8
+        run: python -m unittest discover -s tests -v
+
+      - name: 生成图标
+        run: python tools/make_icon.py
+
+      - name: 打包单文件 exe
+        shell: pwsh
+        run: ./build_exe.ps1 -SkipTests
+
+      - name: 上传构建产物（工作流附件）
+        uses: actions/upload-artifact@v4
+        with:
+          name: PaperDrill-windows-x64
+          path: dist/PaperDrill.exe
+
+      - name: 打 tag 时附带发布 Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/PaperDrill.exe
+          body: |
+            由 GitHub Actions 自动构建（AI 开发，见 AI-DEVELOPED.md）。
+            下载 `PaperDrill.exe` 即可直接运行（Windows 10/11 x64，免安装、免联网）。

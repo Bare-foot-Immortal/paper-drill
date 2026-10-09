@@ -1,0 +1,34 @@
+# UTF-8
+# PyInstaller 版本信息资源：让 exe 属性中显示软件名与版本
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=(1, 2, 1, 0),
+    prodvers=(1, 2, 1, 0),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo(
+      [
+        StringTable(
+          '080404B0',
+          [
+            StringStruct('CompanyName', '刷题匠 PaperDrill'),
+            StringStruct('FileDescription', '刷题匠 PaperDrill —— 题库刷题练习工具（进度自动保留）'),
+            StringStruct('FileVersion', '1.2.1.0'),
+            StringStruct('InternalName', 'PaperDrill'),
+            StringStruct('LegalCopyright', '可自由复制与分发'),
+            StringStruct('OriginalFilename', 'PaperDrill.exe'),
+            StringStruct('ProductName', '刷题匠 PaperDrill'),
+            StringStruct('ProductVersion', '1.2.1.0')
+          ]
+        )
+      ]
+    ),
+    VarFileInfo([VarStruct('Translation', [2052, 1200])])
+  ]
+)

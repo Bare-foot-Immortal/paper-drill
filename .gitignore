@@ -1,0 +1,23 @@
+# 构建产物与临时文件
+.venv/
+build/
+dist/
+*.spec
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# 生成的示例与测试夹具（可用 tools/make_samples.py 重新生成）
+fixtures/
+samples/*.xlsx
+samples/*.docx
+samples/*.pdf
+
+# 图标（由 tools/make_icon.py 生成）
+assets/*.ico
+
+# 本地环境
+.env
+.DS_Store
+Thumbs.db

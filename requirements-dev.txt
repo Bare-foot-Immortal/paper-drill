@@ -1,0 +1,4 @@
+# 开发/构建/测试用依赖
+pyinstaller
+pillow
+reportlab
