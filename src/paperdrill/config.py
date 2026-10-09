@@ -76,13 +76,38 @@ class AppSettings:
         legacy = None
         for key, value in (data or {}).items():
             if key == "shuffle_options":                  # v1.0 兼容
-                legacy = bool(value)
-                continue
-            if hasattr(cfg, key):
                 try:
-                    setattr(cfg, key, value)
+                    legacy = bool(value)
                 except Exception:
-                    continue
+                    legacy = None
+                continue
+            if not hasattr(cfg, key):
+                continue
+            # 逐字段按当前默认值的类型转换：配置文件被改坏（null / 数字 / 字符串混用）
+            # 时取默认值，绝不能因为一个字段类型不对就打不开界面。
+            current = getattr(cfg, key)
+            try:
+                if isinstance(current, bool):
+                    cfg_value = bool(value)
+                elif isinstance(current, int):
+                    cfg_value = int(value)
+                elif isinstance(current, float):
+                    cfg_value = float(value)
+                elif isinstance(current, str):
+                    cfg_value = str(value)
+                elif isinstance(current, (list, tuple)):
+                    if not isinstance(value, (list, tuple)):
+                        continue
+                    cfg_value = type(current)(value)
+                elif isinstance(current, dict):
+                    if not isinstance(value, dict):
+                        continue
+                    cfg_value = dict(value)
+                else:
+                    cfg_value = value
+            except (TypeError, ValueError):
+                continue
+            setattr(cfg, key, cfg_value)
         if legacy is not None:
             cfg.shuffle_single = legacy
             cfg.shuffle_multiple = legacy

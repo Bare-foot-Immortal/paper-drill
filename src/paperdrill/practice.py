@@ -381,7 +381,10 @@ class PracticeSession:
         fp = str(saved.get("last_fp", ""))
         if fp and self.goto_question_fp(fp):
             return True
-        pos = int(saved.get("pos", 0) or 0)
+        try:
+            pos = int(saved.get("pos", 0) or 0)
+        except (TypeError, ValueError):                # 进度文件被改坏时按"从头开始"处理
+            pos = 0
         if 0 <= pos < len(self.order):
             self.cursor = pos
             return True

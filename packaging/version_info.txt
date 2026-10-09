@@ -21,7 +21,7 @@ VSVersionInfo(
             StringStruct('FileDescription', '刷题匠 PaperDrill —— 题库刷题练习工具（进度自动保留）'),
             StringStruct('FileVersion', '1.2.1.0'),
             StringStruct('InternalName', 'PaperDrill'),
-            StringStruct('LegalCopyright', '可自由复制与分发'),
+            StringStruct('LegalCopyright', 'MIT License (c) 2026 Bare-foot-Immortal'),
             StringStruct('OriginalFilename', 'PaperDrill.exe'),
             StringStruct('ProductName', '刷题匠 PaperDrill'),
             StringStruct('ProductVersion', '1.2.1.0')

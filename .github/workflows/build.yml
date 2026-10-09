@@ -38,7 +38,10 @@ jobs:
       - name: 运行测试（pytest）
         env:
           PYTHONIOENCODING: utf-8
-        run: pytest -q
+        run: pytest -q --junitxml=pytest.xml
+
+      - name: 测试健康检查（防止夹具缺失导致整片静默跳过）
+        run: python tools/check_test_health.py pytest.xml
 
       - name: 生成图标
         run: python tools/make_icon.py
@@ -46,6 +49,17 @@ jobs:
       - name: 打包单文件 exe
         shell: pwsh
         run: ./build_exe.ps1 -SkipTests
+
+      - name: exe 烟测（导入合成题库，校验退出码与题目数）
+        shell: pwsh
+        run: |
+          $log = Join-Path $env:TEMP "smoke.log"
+          Remove-Item $log -ErrorAction SilentlyContinue
+          & ./dist/PaperDrill.exe --bank fixtures/样例题库.xlsx --stats-only --log $log
+          if ($LASTEXITCODE -ne 0) { throw "exe 退出码 $LASTEXITCODE" }
+          $text = Get-Content $log -Raw -Encoding UTF8
+          if ($text -notmatch "共\s*52\s*题") { throw "exe 未正确解析题库：$text" }
+          Write-Host "[OK] exe 烟测通过"
 
       - name: 上传构建产物（工作流附件）
         uses: actions/upload-artifact@v4

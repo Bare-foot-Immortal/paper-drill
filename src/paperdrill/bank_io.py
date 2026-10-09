@@ -270,20 +270,21 @@ def _detect_header(rows: list[list[str]]) -> tuple[int, dict[str, object], list[
     return -1, {}, []
 
 
-def _positional_map(width: int) -> dict[str, object]:
-    """无列头时的位置回退策略。"""
+def _positional_map(width: int) -> "dict[str, object] | None":
+    """无列头时的位置回退策略；**仅为与常见模板吻合的列数**回退。
+
+    12 列（标准全宽）、8 列（题型/题干/A–D/解析/答案）、3 列（题型/题干/答案）以外
+    一律返回 ``None``：宁可明确报错，也不要按位置猜错列（例如把 D 选项当成答案）。
+    """
     if width >= 12:
         return {"type": 0, "stem": 1, "options": {j: OPTION_LABELS[j - 2] for j in range(2, 10)},
                 "analysis": 10, "answer": 11}
-    if width >= 5:
-        return {"type": 0, "stem": 1,
-                "options": {j: OPTION_LABELS[j - 2] for j in range(2, max(2, width - 2))},
-                "analysis": width - 2, "answer": width - 1}
-    if width == 4:
-        return {"type": 0, "stem": 1, "options": {}, "analysis": 2, "answer": 3}
+    if width == 8:
+        return {"type": 0, "stem": 1, "options": {j: OPTION_LABELS[j - 2] for j in range(2, 6)},
+                "analysis": 6, "answer": 7}
     if width == 3:
         return {"type": 0, "stem": 1, "options": {}, "analysis": -1, "answer": 2}
-    return {"type": 0, "stem": 1, "options": {}, "analysis": -1, "answer": -1}
+    return None
 
 
 def _cell(row: Sequence[str], idx: object) -> str:
@@ -341,11 +342,14 @@ def rows_to_questions(rows: list[list[str]], *, start_row: int = 1
         first_data_row = start_row
         width = max((len(r) for r in rows), default=0)
         cmap = _positional_map(width)
+        if cmap is None:
+            raise ValueError(
+                f"未找到可识别的列头行（需包含「题干」以及至少 2 个「选项A…」列，或 1 个「选项」合并列）；"
+                f"当前表格 {width} 列且无法按位置安全推断。请在第一行补上列头，例如："
+                "题型 | 题目标题 | 选项A | 选项B | 选项C | 选项D | 解析 | 答案")
         header = []
 
     opt_cols: dict[int, str] = dict(cmap.get("options", {}))  # type: ignore[arg-type]
-    if not opt_cols and width >= 5:
-        opt_cols = {j: OPTION_LABELS[j - 2] for j in range(2, max(2, width - 2))}
 
     running = 0
     for offset, row in enumerate(data_rows):
@@ -435,7 +439,9 @@ _SECTION_RE = re.compile(
 )
 _QNUM_RE = re.compile(r"^\s*([0-9０-９]{1,3})\s*(?:[、．)）]\s*|\.\s*(?![0-9０-９]))(\S.*)$")
 _STEM_PREFIX_RE = re.compile(r"^\s*题\s*干\s*[:：]\s*(.*)$")
-_ANS_RE = re.compile(r"^\s*(?:答案|正确答案|参考答案|标准答案)\s*[:：]\s*(.*)$")
+_ANS_RE = re.compile(
+    r"^\s*(?:[【\[（(]\s*)?(?:参考答案|正确答案|标准答案|答案)\s*(?:[】\]）)])?\s*[:：]?\s*(\S.*)$"
+)
 _ANA_RE = re.compile(r"^\s*(?:解析|来源|依据|说明|知识点|出处|文件依据)\s*[:：]\s*(.*)$")
 _OPT_MARK_RE = re.compile(rf"([{_LETTER_CLS}])\s*[.．、,，:：]\s*")
 _OPT_START_RE = re.compile(rf"^\s*[{_LETTER_CLS}]\s*[.．、,，:：]")
@@ -512,6 +518,17 @@ def _letters_from_token(token: str) -> list[str]:
         if letter and letter not in out:
             out.append(letter)
     return sorted(out)
+
+
+_JUDGE_OPTION_WORDS = ("正确", "错误", "对", "错", "是", "否", "√", "×", "✓", "✗")
+
+
+def _options_look_like_judge(options: dict[str, str]) -> bool:
+    """选项本身是否是"正确 / 错误"两类（据此判断字母答案是不是判断题答案）。"""
+    texts = [normalize_text(t) for t in options.values() if t is not None]
+    if len(texts) != 2:
+        return False
+    return all(any(w in t for w in _JUDGE_OPTION_WORDS) for t in texts)
 
 
 def _extract_embedded_answer(stem: str) -> tuple["str | None", str]:
@@ -607,7 +624,7 @@ def _split_options(text: str) -> tuple[list[tuple[str, str]], "str | None"]:
     leftover: "str | None" = None
     letter, last = segs[-1]
     glue = _GLUE_RE.search(last)
-    if glue and len(glue.group(2)) > 8:                 # 尾部粘连了下一题题干
+    if glue and len(glue.group(2)) >= 2:                # 尾部粘连了下一题题干（至少 2 个字符才切）
         segs[-1] = (letter, last[: glue.start()].strip())
         leftover = f"{_digits(glue.group(1))}、{glue.group(2)}"
     return [(lab, txt) for lab, txt in segs if txt], leftover
@@ -615,19 +632,23 @@ def _split_options(text: str) -> tuple[list[tuple[str, str]], "str | None"]:
 
 def _decide_qtype(section: "QType | str | None", answer_token: str,
                   options: dict[str, str]) -> "QType | None":
-    """题型判定：章节优先，答案形态兜底；单选章节出现多字母答案时容错为多选。"""
+    """题型判定：章节优先，答案形态兜底；单选章节出现多字母答案时容错为多选。
+
+    注意：字母答案 ``A``/``B`` 既可能是单选选项，也可能是判断题的"正确/错误"，
+    因此**只有在没有选项、或选项本身就是"正确/错误"两类**时才按判断题处理，
+    否则 ``（B）`` 这类单选答案会被误判成判断题并丢掉全部选项。
+    """
     letters = _letters_from_token(answer_token)
     judge = _judge_from_token(answer_token) if answer_token else None
     if section is QType.JUDGE:
         return QType.JUDGE
-    if judge is not None and not options:
+    judge_like = (not options) or _options_look_like_judge(options)
+    if judge is not None and judge_like:
         return QType.JUDGE
     if section is QType.MULTIPLE:
         return QType.MULTIPLE
     if section is QType.SINGLE:
         return QType.MULTIPLE if len(letters) >= 2 else QType.SINGLE
-    if judge is not None:
-        return QType.JUDGE
     if len(letters) >= 2:
         return QType.MULTIPLE
     if len(letters) == 1:
@@ -886,23 +907,36 @@ _COMBINED_OPTION_HEADERS = {"选项", "选项内容", "备选项", "答案选项
 
 
 def _expand_combined_options(rows: list[list[str]]) -> list[list[str]]:
-    """把"所有选项挤在一列"的表格展开成 选项A…选项H 多列。"""
+    """把"所有选项挤在一列"的表格展开成 选项A…选项H 多列。
+
+    表头不一定在第 1 行（上方可能有标题/空行），因此先用与列头识别相同的规则定位表头行。
+    """
     if not rows:
         return rows
-    header = rows[0]
+
+    stem_tokens = {_header_token(n) for n in _HEADER_SYNONYMS["stem"]}
+    header_idx = -1
     combo = None
-    for i, name in enumerate(header):
-        if _header_token(name) in _COMBINED_OPTION_HEADERS:
-            combo = i
-            break
-    if combo is None:
+    for i, row in enumerate(rows[:_HEADER_SCAN_ROWS]):
+        tokens = [_header_token(c) for c in row]
+        if not any(t in _COMBINED_OPTION_HEADERS for t in tokens):
+            continue
+        if not any(t in stem_tokens for t in tokens if t):
+            continue
+        header_idx = i
+        combo = next(j for j, t in enumerate(tokens) if t in _COMBINED_OPTION_HEADERS)
+        break
+    if header_idx < 0 or combo is None:
         return rows
+
+    header = rows[header_idx]
     if any(_option_letter_of_header(h) for h in header if h):
         return rows                                        # 已有 A–H 独立列
 
     letters = list(OPTION_LABELS[:8])
-    out = [list(header[:combo]) + [f"选项{x}" for x in letters] + list(header[combo + 1:])]
-    for row in rows[1:]:
+    out = [list(r) for r in rows[:header_idx]]              # 标题/空行原样保留
+    out.append(list(header[:combo]) + [f"选项{x}" for x in letters] + list(header[combo + 1:]))
+    for row in rows[header_idx + 1:]:
         cell = row[combo] if combo < len(row) else ""
         segs, _leftover = _split_options(normalize_text(cell))
         opts = dict(segs)

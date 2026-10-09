@@ -588,11 +588,21 @@ class PaperDrillApp(tk.Tk):
 
         self.bank = result
         self.bank_var.set(Path(path).name)
-        self.store = ProgressStore.load_for(Path(path).stem, result.questions)
         try:
-            self.store.save()
-        except Exception:
-            pass
+            self.store = ProgressStore.load_for(Path(path).stem, result.questions)
+        except Exception as exc:                # 进度文件异常也不能让界面卡在"无会话"状态
+            from .store import BankProgress, bank_key_of
+
+            self.store = ProgressStore(
+                BankProgress(bank_key=bank_key_of(Path(path).stem, result.questions),
+                             bank_name=Path(path).stem,
+                             question_total=len(result.questions)))
+            messagebox.showwarning(
+                "进度文件异常",
+                f"读取原有进度时出现问题，已按空进度继续：\n{exc}\n\n"
+                "如反复出现，可在「进度管理」里删除该题库进度后重试。")
+        if not self.store._try_save():
+            self.set_status(f"⚠ 进度未能保存：{self.store.last_save_error}")
         self._refresh_stats()
 
         self.settings.bank_path = path
@@ -1008,6 +1018,8 @@ class PaperDrillApp(tk.Tk):
         self.session.save_position()
         self._refresh_footer()
         self._refresh_stats()
+        if getattr(self.store, "last_save_error", ""):
+            self.set_status(f"⚠ 进度未能保存：{self.store.last_save_error}")
         if result.correct and self.auto_next_var.get():
             self._auto_next_job = self.after(self.settings.auto_next_delay_ms, self._auto_next)
 

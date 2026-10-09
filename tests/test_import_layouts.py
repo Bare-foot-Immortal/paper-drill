@@ -223,15 +223,13 @@ class TestOtherFormats(LayoutCase):
         self.assertEqual(res.questions[0].options, ["甲", "乙", "丙", "丁"])
         self.assertEqual(res.questions[1].answer_letters, ["A", "B"])
 
-    def test_real_bank_still_works(self):
-        """真实 52 题题库（标准列头）不得因本轮放宽而回归。"""
-        candidates = [ROOT.parent / "例" / "样例题库.xlsx",
-                      ROOT.parent / "样例题库.xlsx"]
-        bank = next((c for c in candidates if c.exists()), None)
-        if bank is None:
-            self.skipTest("未找到合成题库")
+    def test_fixture_bank_still_works(self):
+        """仓库内合成夹具题库（52 题，标准列头）不得因本轮的兼容性放宽而回归。"""
+        bank = ROOT / "fixtures" / "样例题库.xlsx"
+        if not bank.exists():
+            self.skipTest(f"未找到夹具题库：{bank}（可运行 tools/make_samples.py 生成）")
         res = self.load(bank)
-        self.assertEqual(len(res.questions), 163)
+        self.assertEqual(len(res.questions), 52)
         self.assertEqual(len(res.issues), 0)
 
 

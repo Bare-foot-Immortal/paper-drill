@@ -101,8 +101,8 @@ class TestTextParser(unittest.TestCase):
         """无分隔符选项样例的形态：答案写在带空格的全角括号里，选项到 E。"""
         qs, issues, _ = parse([
             "二、多项选择题练习",
-            "1.根据管理规定，输变电工程建设期间（  BCE ）应按规定配备专职质量管理人员。",
-            "A．甲单位    B. 乙单位    C.班组长    D.项目经理    E.专业技术负责人",
+            "1.根据现场管理规定，作业期间（  BCE ）应按规定落实专项管理措施。",
+            "A．甲岗位    B. 乙岗位    C.丙岗位    D.丁岗位    E.戊岗位",
         ])
         self.assertEqual(issues, [])
         self.assertEqual(len(qs), 1)

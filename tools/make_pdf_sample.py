@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """生成 PDF 测试样例（模拟"Word 导出的文本型 PDF"）。
 
-用途：PDF 导入功能的测试夹具（fixture）。构建期运行一次，产物提交到 samples/，
-测试只读取产物，不需要 reportlab。
+用途：把一段文本渲染成「Word 导出型」PDF，用于手工验证 PDF 导入。
+注意：产物不建议提交到仓库（samples/*.pdf 已在 .gitignore 中忽略）；
+自动化测试的夹具由 tools/make_samples.py 生成。
 
 用法：
     python tools/make_pdf_sample.py            # 用内置题库内容生成 samples/示例题库.pdf

@@ -25,6 +25,14 @@ from .models import Question
 __all__ = ["QRecord", "ProgressStore", "progress_dir", "bank_key_of", "safe_name"]
 
 INHERIT_THRESHOLD = 0.6      # 内容重合度达到该比例才继承旧进度
+
+
+def _as_int(value: object, default: int = 0) -> int:
+    """把任意值安全转为 int（进度文件被人为编辑/损坏时不让整个加载失败）。"""
+    try:
+        return int(value)          # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
 SCHEMA_VERSION = 1
 
 
@@ -96,9 +104,9 @@ class QRecord:
 
     @classmethod
     def from_dict(cls, data: dict) -> "QRecord":
-        return cls(right=int(data.get("right", 0)), wrong=int(data.get("wrong", 0)),
-                   last=str(data.get("last", "")), streak=int(data.get("streak", 0)),
-                   ts=str(data.get("ts", "")))
+        return cls(right=_as_int(data.get("right"), 0), wrong=_as_int(data.get("wrong"), 0),
+                   last=str(data.get("last", "") or ""), streak=_as_int(data.get("streak"), 0),
+                   ts=str(data.get("ts", "") or ""))
 
 
 @dataclass
@@ -200,20 +208,27 @@ class BankProgress:
 
     @classmethod
     def from_dict(cls, data: dict) -> "BankProgress":
-        prog = cls(bank_key=str(data.get("bank_key", "")),
-                   bank_name=str(data.get("bank_name", "")),
-                   question_total=int(data.get("question_total", 0)),
-                   created=str(data.get("created", "")),
-                   updated=str(data.get("updated", "")),
-                   inherited_from=str(data.get("inherited_from", "")))
-        raw = data.get("records") or {}
+        """从 JSON 构造进度；**逐字段容错**，任何非法字段都不应让加载失败。"""
+        if not isinstance(data, dict):
+            data = {}
+        prog = cls(bank_key=str(data.get("bank_key", "") or ""),
+                   bank_name=str(data.get("bank_name", "") or ""),
+                   question_total=_as_int(data.get("question_total"), 0),
+                   created=str(data.get("created", "") or ""),
+                   updated=str(data.get("updated", "") or ""),
+                   inherited_from=str(data.get("inherited_from", "") or ""))
+        raw = data.get("records")
         if isinstance(raw, dict):
             for fp, rec in raw.items():
-                if isinstance(rec, dict):
+                if not isinstance(rec, dict):
+                    continue
+                try:
                     prog.records[str(fp)] = QRecord.from_dict(rec)
-        sess = data.get("session") or {}
+                except Exception:                      # 单条记录损坏 → 跳过，不影响其它
+                    continue
+        sess = data.get("session")
         prog.session = sess if isinstance(sess, dict) else {}
-        exams = data.get("exams") or []
+        exams = data.get("exams")
         prog.exams = [e for e in exams if isinstance(e, dict)] if isinstance(exams, list) else []
         return prog
 
@@ -229,6 +244,7 @@ class ProgressStore:
     def __init__(self, bank: BankProgress, directory: "Path | None" = None) -> None:
         self.progress = bank
         self.dir = Path(directory) if directory else progress_dir()
+        self.last_save_error = ""      # 非空表示最近一次落盘失败（界面据此提示用户）
 
     # ------------------------------------------------------------ 属性
     @property
@@ -253,12 +269,16 @@ class ProgressStore:
         if exact.exists():
             data = _read_json(exact)
             if data:
-                prog = BankProgress.from_dict(data)
-                prog.bank_key = key
-                prog.bank_name = prog.bank_name or bank_name
-                prog.question_total = len(questions)
-                prog.inherited_from = ""
-                return cls(prog, directory)
+                try:
+                    prog = BankProgress.from_dict(data)
+                except Exception:                      # 极端损坏 → 按无进度处理
+                    prog = None
+                if prog is not None:
+                    prog.bank_key = key
+                    prog.bank_name = prog.bank_name or bank_name
+                    prog.question_total = len(questions)
+                    prog.inherited_from = ""
+                    return cls(prog, directory)
         # 内容继承
         inherited = cls._find_inheritable(directory, questions)
         if inherited is not None:
@@ -284,10 +304,16 @@ class ProgressStore:
             data = _read_json(path)
             if not data:
                 continue
-            prog = BankProgress.from_dict(data)
+            try:
+                prog = BankProgress.from_dict(data)
+            except Exception:                          # 单个坏文件不得影响其它题库
+                continue
             if not prog.records:
                 continue
-            overlap = len(set(prog.records) & fps) / len(prog.records)
+            common = len(set(prog.records) & fps)
+            # 分母取"旧记录数 / 新题库题数"中较小者：题库删题或扩题时都能正确判定为同一题库
+            denominator = max(1, min(len(prog.records), len(fps)))
+            overlap = common / denominator
             if overlap >= INHERIT_THRESHOLD and (best is None or overlap > best[0]):
                 best = (overlap, path, prog)
         if best is None:
@@ -295,23 +321,27 @@ class ProgressStore:
         return best[1], best[2]
 
     # ------------------------------------------------------------ 写入
+    def _try_save(self) -> bool:
+        """尝试落盘；失败时记录原因（不抛异常），供界面提示"进度未能保存"。"""
+        try:
+            self.save()
+            self.last_save_error = ""
+            return True
+        except Exception as exc:                       # OSError / 权限 / 路径异常等
+            self.last_save_error = f"{type(exc).__name__}: {exc}"
+            return False
+
     def apply_answer(self, question: Question, correct: bool) -> QRecord:
         """记录一次作答并**立即落盘**（练习进度实时保留）。"""
         rec = self.progress.apply_answer(question, correct)
-        try:
-            self.save()
-        except OSError:
-            pass
+        self._try_save()
         return rec
 
     def apply_answers(self, pairs: Sequence[tuple[Question, bool]]) -> None:
         """批量记录作答，只落盘一次（模拟考试交卷时使用）。"""
         for question, correct in pairs:
             self.progress.apply_answer(question, correct)
-        try:
-            self.save()
-        except OSError:
-            pass
+        self._try_save()
 
     def add_exam_record(self, record: dict) -> None:
         self.progress.add_exam_record(record)
@@ -333,7 +363,7 @@ class ProgressStore:
             self.progress.created = _now()
         self.progress.updated = _now()
         target = self.path
-        tmp = target.with_suffix(".json.tmp")
+        tmp = target.with_suffix(f".json.{os.getpid()}.tmp")
         payload = json.dumps(self.progress.to_dict(), ensure_ascii=False, indent=2)
         tmp.write_text(payload, encoding="utf-8")
         os.replace(tmp, target)          # 原子替换，避免半截文件
@@ -382,7 +412,12 @@ class ProgressStore:
                 out.append({"key": path.stem, "name": path.stem, "broken": True,
                             "path": str(path), "done": 0, "total": 0, "wrong": 0, "updated": ""})
                 continue
-            prog = BankProgress.from_dict(data)
+            try:
+                prog = BankProgress.from_dict(data)
+            except Exception:
+                out.append({"key": path.stem, "name": path.stem, "broken": True,
+                            "path": str(path), "done": 0, "total": 0, "wrong": 0, "updated": ""})
+                continue
             right = sum(r.right for r in prog.records.values())
             wrong = sum(r.wrong for r in prog.records.values())
             attempts = right + wrong
