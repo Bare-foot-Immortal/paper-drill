@@ -22,8 +22,13 @@ from pathlib import Path
 from typing import Iterable, Sequence
 
 from .models import (
-    OPTION_LABELS, AnswerParseError, Blueprint, QType, Question,
-    normalize_text, parse_answer, parse_qtype,
+    OPTION_LABELS,
+    AnswerParseError,
+    QType,
+    Question,
+    normalize_text,
+    parse_answer,
+    parse_qtype,
 )
 
 __all__ = [
@@ -413,7 +418,7 @@ def rows_to_questions(rows: list[list[str]], *, start_row: int = 1
             continue
         questions.append(q)
 
-    return questions, issues, header, {k: v for k, v in cmap.items()}
+    return questions, issues, header, dict(cmap.items())
 
 
 # ================================================================ 段落文本解析
@@ -900,7 +905,7 @@ def _expand_combined_options(rows: list[list[str]]) -> list[list[str]]:
     for row in rows[1:]:
         cell = row[combo] if combo < len(row) else ""
         segs, _leftover = _split_options(normalize_text(cell))
-        opts = {lab: txt for lab, txt in segs}
+        opts = dict(segs)
         out.append(list(row[:combo]) + [opts.get(x, "") for x in letters] + list(row[combo + 1:]))
     return out
 

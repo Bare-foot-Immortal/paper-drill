@@ -30,7 +30,8 @@ def main(argv: "list[str] | None" = None) -> int:
             return run_gui(str(candidate))
 
     if args:
-        from .cli import attach_parent_console, main as run_cli
+        from .cli import attach_parent_console
+        from .cli import main as run_cli
 
         attach_parent_console()
         try:

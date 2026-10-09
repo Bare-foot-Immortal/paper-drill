@@ -107,7 +107,7 @@ class PracticeItem:
         return "".join(sorted(self.shown_answer, key=OPTION_LABELS.index))
 
     def options(self) -> list[tuple[str, str]]:
-        return list(zip(self.labels, self.texts))
+        return list(zip(self.labels, self.texts, strict=False))
 
     def _as_letters(self, selected) -> "set[str]":
         """把作答统一为显示字母集合（判断题支持 bool 入参）。"""

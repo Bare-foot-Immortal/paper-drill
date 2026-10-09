@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>刷题匠 PaperDrill · 题库工具（AI 开发）</title>
+<style>
+  :root {
+    --bg: #0f1720; --card: #16212e; --fg: #e8eef5; --muted: #9fb0c3;
+    --accent: #35c1a6; --accent2: #4a90d9; --border: #24313f;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg: #f5f7fa; --card: #fff; --fg: #16212e; --muted: #5d7085;
+             --border: #e2e8f0; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+         font: 16px/1.7 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 32px 20px 64px; }
+  header { padding: 8px 0 24px; border-bottom: 1px solid var(--border); }
+  h1 { font-size: 30px; margin: 0 0 6px; }
+  .tag { color: var(--muted); }
+  .badge { display: inline-block; margin: 12px 8px 0 0; padding: 4px 10px; font-size: 13px;
+            border: 1px solid var(--border); border-radius: 999px; color: var(--muted); }
+  .ai { margin: 20px 0; padding: 14px 16px; border-radius: 10px;
+         border: 1px solid var(--accent); background: rgba(53,193,166,.08); }
+  .ai b { color: var(--accent); }
+  h2 { font-size: 20px; margin: 36px 0 12px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
+  .card h3 { margin: 0 0 6px; font-size: 16px; }
+  .card p { margin: 0; color: var(--muted); font-size: 14.5px; }
+  .btns { display: flex; flex-wrap: wrap; gap: 12px; margin: 18px 0 6px; }
+  a.btn { display: inline-block; padding: 11px 18px; border-radius: 10px; text-decoration: none;
+           font-weight: 600; background: var(--accent); color: #06231d; }
+  a.btn.alt { background: transparent; color: var(--fg); border: 1px solid var(--border); }
+  table { width: 100%; border-collapse: collapse; font-size: 14.5px; }
+  th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; }
+  code, pre { font-family: ui-monospace, Consolas, "Cascadia Mono", monospace; font-size: 13.5px; }
+  pre { background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+         padding: 14px; overflow: auto; }
+  ul { padding-left: 20px; }
+  footer { margin-top: 44px; padding-top: 18px; border-top: 1px solid var(--border);
+            color: var(--muted); font-size: 14px; }
+  a { color: var(--accent2); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>刷题匠 PaperDrill</h1>
+    <div class="tag">题库刷题练习 + 模拟考试桌面工具 ｜ 版本 v1.2.1 ｜ Windows 单文件程序，免安装、免联网</div>
+    <div>
+      <span class="badge">AI 开发（DeepSeek）</span>
+      <span class="badge">MIT License</span>
+      <span class="badge">自动化测试 152 项（pytest）</span>
+      <span class="badge">Windows 10/11 x64</span>
+    </div>
+  </header>
+
+  <div class="ai">
+    ⚠️ <b>本项目由 AI 开发</b>：源码、测试、文档与构建脚本均由 AI（DeepSeek）编写，人类提出需求并验收结果。
+    请在使用前自行审阅代码。详见
+    <a href="https://github.com/Bare-foot-Immortal/paper-drill/blob/main/AI-DEVELOPED.md">AI-DEVELOPED.md</a>。
+  </div>
+
+  <div class="btns">
+    <a class="btn" href="https://github.com/Bare-foot-Immortal/paper-drill/releases/latest">下载 PaperDrill.exe（Release）</a>
+    <a class="btn alt" href="https://github.com/Bare-foot-Immortal/paper-drill">浏览源码</a>
+    <a class="btn alt" href="https://github.com/Bare-foot-Immortal/paper-drill/actions">构建记录（CI）</a>
+  </div>
+
+  <h2>这是什么</h2>
+  <p>导入 Excel / Word / PDF 题库，实时判题、错题本、按题型练习、自定义蓝图生成试卷做真实模拟考试，进度自动保留。</p>
+
+  <h2>功能一览</h2>
+  <div class="grid">
+    <div class="card"><h3>三种题型</h3><p>单选 / 多选 / 判断，统一渲染与判题</p></div>
+    <div class="card"><h3>多格式题库</h3><p>Excel、CSV、TXT、JSON、Word（表格型/段落文本型）、PDF（文本型）</p></div>
+    <div class="card"><h3>实时判题</h3><p>单选与判断点选即判，多选提交判；显示正确答案与解析</p></div>
+    <div class="card"><h3>练习模式</h3><p>顺序 / 随机 / 错题重练 / 只练未做，可叠加按题型练习</p></div>
+    <div class="card"><h3>自定义组卷</h3><p>题量与题型占比任意配置，一轮覆盖全部题目，末卷自动补题</p></div>
+    <div class="card"><h3>真实模拟考试</h3><p>作答期不提示对错，交卷一次性评分：总分、正确率、各题型明细、逐题明细</p></div>
+    <div class="card"><h3>进度自动保留</h3><p>题目指纹定位，题库增删或改名自动继承进度</p></div>
+    <div class="card"><h3>快捷键</h3><p>1~8 选答案、Enter 下一题、← → 翻题、F9 交卷</p></div>
+  </div>
+
+  <h2>题库格式</h2>
+  <table>
+    <tr><th>格式</th><th>说明</th></tr>
+    <tr><td>Excel / CSV / TXT</td><td>列头 <code>题型 | 题目标题 | 选项A…选项H | 解析 | 答案</code>；
+        列名可用同义词、列顺序不限、首行可以是标题、列头可写在前 20 行内</td></tr>
+    <tr><td>Word（.docx）</td><td><b>表格型</b>（列头同上）或<b>段落文本型</b>（题干、选项、答案分行；
+        答案可写在题干括号里，如 <code>（C）</code>、<code>（  BCE ）</code>、<code>（√）</code>）</td></tr>
+    <tr><td>PDF</td><td>读取文本层（扫描件不支持）：先按段落解析，再用「多空格分列」兜底</td></tr>
+    <tr><td>JSON</td><td>中文键（<code>题型</code>/<code>题目标题</code>/<code>选项A</code>…）
+        或英文键（<code>type</code>/<code>stem</code>/<code>optionA</code>…）均可</td></tr>
+  </table>
+  <p class="tag">无法解析的行不会进入题库，但会给出「行号 + 原因 + 题干片段」。示例题库由
+    <a href="https://github.com/Bare-foot-Immortal/paper-drill/blob/main/tools/make_samples.py">tools/make_samples.py</a>
+    生成（合成内容，不含任何真实单位数据）。</p>
+
+  <h2>快速开始</h2>
+  <p><b>直接用</b>：从 <a href="https://github.com/Bare-foot-Immortal/paper-drill/releases/latest">Releases</a> 下载
+     <code>PaperDrill.exe</code>，双击运行 → 导入题库 → 开始使用（无需安装 Python）。</p>
+  <pre># 从源码运行
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+python tools/make_samples.py            # 生成合成示例题库
+set PYTHONPATH=src
+python -m paperdrill --bank samples\示例题库.xlsx
+
+# 自行打包单文件 exe
+powershell -ExecutionPolicy Bypass -File build_exe.ps1</pre>
+
+  <h2>测试与代码检查</h2>
+  <pre>pip install -r requirements.txt -r requirements-dev.txt
+python tools/make_samples.py
+pytest -q                 # 自动化测试
+ruff check src tools tests  # 代码检查</pre>
+  <p class="tag">CI（GitHub Actions）在每次推送时执行上述步骤，并自动打包 Windows 单文件 exe。</p>
+
+  <h2>文档</h2>
+  <ul>
+    <li><a href="https://github.com/Bare-foot-Immortal/paper-drill/blob/main/docs/01-需求规格说明书.md">需求规格说明书</a></li>
+    <li><a href="https://github.com/Bare-foot-Immortal/paper-drill/blob/main/docs/02-概要设计说明书.md">概要设计说明书</a></li>
+    <li><a href="https://github.com/Bare-foot-Immortal/paper-drill/blob/main/docs/03-测试报告.md">测试报告（含逐条验收对照）</a></li>
+    <li><a href="https://github.com/Bare-foot-Immortal/paper-drill/blob/main/docs/04-快捷键缺陷分析与修复.md">缺陷分析：Enter 快捷键失效</a></li>
+    <li><a href="https://github.com/Bare-foot-Immortal/paper-drill/blob/main/docs/05-重做已作答题目缺陷分析与修复.md">缺陷分析：重做已作答题目被锁定</a></li>
+    <li><a href="https://github.com/Bare-foot-Immortal/paper-drill/blob/main/docs/06-Word与PDF题库导入说明.md">Word / PDF 题库导入说明</a></li>
+  </ul>
+
+  <footer>
+    <div>AI 开发声明：<a href="https://github.com/Bare-foot-Immortal/paper-drill/blob/main/AI-DEVELOPED.md">AI-DEVELOPED.md</a>
+      ｜ 许可：<a href="https://github.com/Bare-foot-Immortal/paper-drill/blob/main/LICENSE">MIT</a>
+      ｜ 仓库：<a href="https://github.com/Bare-foot-Immortal/paper-drill">Bare-foot-Immortal/paper-drill</a></div>
+    <div>软件按「现状」提供，不提供任何担保；请自行确保导入的题库内容合法合规。</div>
+  </footer>
+</div>
+</body>
+</html>

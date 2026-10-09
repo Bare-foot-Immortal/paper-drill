@@ -15,10 +15,9 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import tkinter as tk
 import traceback
 from pathlib import Path
-
-import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from . import __app_name__, __version__
@@ -26,8 +25,13 @@ from .bank_io import bank_stats, load_bank
 from .config import AppSettings
 from .models import QType
 from .paper import GenerationError, generate_round, min_round_length
-from .practice import (DEFAULT_SCORES, ExamResult, ExamSession, PracticeMode,
-                       PracticeSession, Scope)
+from .practice import (
+    ExamResult,
+    ExamSession,
+    PracticeMode,
+    PracticeSession,
+    Scope,
+)
 from .store import ProgressStore, progress_dir
 
 HELP_TEXT = """【刷题匠 PaperDrill 使用说明】
@@ -1464,7 +1468,7 @@ class PaperDrillApp(tk.Tk):
         for i, q in enumerate(wrong, start=1):
             text.insert("end", f"{i}. {q.stem}\n")
             if q.qtype is not QType.JUDGE:
-                for letter, opt in zip("ABCDEFGH", q.options):
+                for letter, opt in zip("ABCDEFGH", q.options, strict=False):
                     text.insert("end", f"    {letter}. {opt}\n")
             ans = q.answer_display + ("（定）" if q.fixed_order else "")
             text.insert("end", f"    ✔ 正确答案：{ans}\n")
@@ -1645,7 +1649,6 @@ def selftest(bank_path: str, result_path: str = "", progress_root: str = "",
     交卷评分 → 校验进度与成绩落盘 → 重开恢复 → 错题本 → 重置。
     """
     import json
-
     from tkinter import messagebox as mb
 
     from .models import QType as _QType
@@ -1669,6 +1672,7 @@ def selftest(bank_path: str, result_path: str = "", progress_root: str = "",
         _patch(_n, _k)
 
     import paperdrill.store as store_mod
+
     from .config import AppSettings
 
     if progress_root:

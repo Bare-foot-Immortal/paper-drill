@@ -20,14 +20,28 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from paperdrill.bank_io import bank_stats, build_sample_questions, load_bank           # noqa: E402
-from paperdrill.models import OPTION_LABELS, QType, Question                          # noqa: E402
-from paperdrill.paper import (GenerationError, PaperBlueprint, generate_round,        # noqa: E402
-                              min_round_length)
-from paperdrill.practice import (DEFAULT_SCORES, ExamSession, PracticeMode,           # noqa: E402
-                                 PracticeSession, Scope, build_item)
-from paperdrill.store import (INHERIT_THRESHOLD, BankProgress, ProgressStore,         # noqa: E402
-                              QRecord, bank_key_of)
+from paperdrill.bank_io import (  # noqa: E402
+    bank_stats,
+    load_bank,
+)
+from paperdrill.models import OPTION_LABELS, QType, Question  # noqa: E402
+from paperdrill.paper import (  # noqa: E402
+    GenerationError,
+    PaperBlueprint,
+    generate_round,
+    min_round_length,
+)
+from paperdrill.practice import (  # noqa: E402
+    ExamSession,
+    PracticeMode,
+    PracticeSession,
+    Scope,
+    build_item,
+)
+from paperdrill.store import (  # noqa: E402
+    ProgressStore,
+    bank_key_of,
+)
 
 FIXTURES = ROOT / "fixtures"
 REAL_BANK = FIXTURES / "样例题库.xlsx"          # 合成夹具（tools/make_samples.py 生成）
@@ -659,7 +673,7 @@ class TestExamSession(unittest.TestCase):
         exam = ExamSession(self.paper, self.store, seed=1)
         exam.set_answer(0, set(exam.item(0).shown_answer))
         exam.set_answer(1, {lab for lab in exam.item(1).labels if lab not in exam.item(1).shown_answer})
-        result = exam.submit()
+        exam.submit()
         stats = self.store.stats(self.questions)
         self.assertEqual(stats["done"], 10)          # 未答也计入"已练"（按错误计）
         self.assertEqual(stats["right"], 1)
@@ -913,7 +927,7 @@ class TestKeyboardShortcuts(unittest.TestCase):
             root = tkinter.Tk()
             root.destroy()
         except Exception as exc:
-            raise unittest.SkipTest(f"当前环境不支持 tkinter：{exc}")
+            raise unittest.SkipTest(f"当前环境不支持 tkinter：{exc}") from exc
 
     def setUp(self):
         import paperdrill.store as store_mod
@@ -1220,7 +1234,7 @@ class TestRedoAnsweredQuestions(unittest.TestCase):
             root = tkinter.Tk()
             root.destroy()
         except Exception as exc:
-            raise unittest.SkipTest(f"当前环境不支持 tkinter：{exc}")
+            raise unittest.SkipTest(f"当前环境不支持 tkinter：{exc}") from exc
 
     def setUp(self):
         import paperdrill.store as store_mod

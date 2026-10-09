@@ -244,7 +244,7 @@ class PaperItem:
         return self.question.stem
 
     def option_lines(self) -> list[str]:
-        return [f"{label}. {text}" for label, text in zip(self.labels, self.texts)]
+        return [f"{label}. {text}" for label, text in zip(self.labels, self.texts, strict=False)]
 
 
 @dataclass

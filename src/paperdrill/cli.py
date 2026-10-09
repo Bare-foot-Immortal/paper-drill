@@ -11,7 +11,7 @@ from pathlib import Path
 
 from . import __app_name__, __version__
 from .bank_io import bank_stats, load_bank, write_template_xlsx
-from .store import ProgressStore, progress_dir
+from .store import ProgressStore
 
 
 def attach_parent_console() -> None:
@@ -188,7 +188,7 @@ def _headless_paper(bank_path: str, args) -> int:
             exam.clear_answer(i)
     res = exam.submit()
     print(f"[考试] {res.summary()}")
-    for key, data in res.per_type.items():
+    for data in res.per_type.values():
         print(f"       - {data['name']}：{data['correct']}/{data['total']}，"
               f"得分 {data['score']:g}/{data['full']:g}")
     print(f"[成绩] 已保存，当前历史成绩 {len(store.exam_history())} 条；"

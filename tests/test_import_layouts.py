@@ -16,8 +16,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from paperdrill.bank_io import load_bank                       # noqa: E402
-from paperdrill.models import QType                            # noqa: E402
+from paperdrill.bank_io import load_bank  # noqa: E402
+from paperdrill.models import QType  # noqa: E402
 
 HEADER = ["题型", "题目标题", "选项A", "选项B", "选项C", "选项D", "解析", "答案"]
 DATA = [

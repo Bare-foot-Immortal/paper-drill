@@ -18,11 +18,10 @@
 """
 from __future__ import annotations
 
-import sys
-
 import argparse
 import csv
 import json
+import sys
 from pathlib import Path
 
 
@@ -152,7 +151,7 @@ def write_txt(path: Path) -> None:
 def write_json(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     header = _rows()[0]
-    data = [dict(zip(header, row)) for row in _rows()[1:]]
+    data = [dict(zip(header, row, strict=False)) for row in _rows()[1:]]
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
@@ -192,14 +191,14 @@ def write_docx_paragraph_style(path: Path) -> list[str]:
     doc.add_paragraph(lines[0])
     doc.add_paragraph(lines[1])
     for i, (stem, opts, ans) in enumerate(SINGLE[:4], start=1):
-        block = [f"{i}、{_numbered(stem, ans)}"] + [f"{lab}.{o}" for lab, o in zip("ABCD", opts)]
+        block = [f"{i}、{_numbered(stem, ans)}"] + [f"{lab}.{o}" for lab, o in zip("ABCD", opts, strict=False)]
         for line in block:
             doc.add_paragraph(line)
         lines.extend(block)
     lines.append("二、多项选择题")
     doc.add_paragraph(lines[-1])
     for i, (stem, opts, ans) in enumerate(MULTIPLE[:2], start=1):
-        block = [f"{i}、{_numbered(stem, ans)}"] + [f"{lab}.{o}" for lab, o in zip("ABCD", opts)]
+        block = [f"{i}、{_numbered(stem, ans)}"] + [f"{lab}.{o}" for lab, o in zip("ABCD", opts, strict=False)]
         for line in block:
             doc.add_paragraph(line)
         lines.extend(block)
@@ -221,7 +220,7 @@ def write_docx_inline_options(path: Path) -> None:
     doc.add_paragraph("一、单项选择题")
     for i, (stem, opts, ans) in enumerate(SINGLE[:3], start=1):
         doc.add_paragraph(f"{i}、{_numbered(stem, ans)}")
-        doc.add_paragraph("    ".join(f"{lab}.{o}" for lab, o in zip("ABCD", opts)))
+        doc.add_paragraph("    ".join(f"{lab}.{o}" for lab, o in zip("ABCD", opts, strict=False)))
     path.parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(path))
 
@@ -232,13 +231,13 @@ def write_docx_answer_lines(path: Path) -> None:
     doc.add_paragraph("第一部分 单项选择题")
     for stem, opts, ans in SINGLE[:3]:
         doc.add_paragraph(f"题干：{stem}")
-        doc.add_paragraph(" ".join(f"{lab}.{o}" for lab, o in zip("ABCD", opts)))
+        doc.add_paragraph(" ".join(f"{lab}.{o}" for lab, o in zip("ABCD", opts, strict=False)))
         doc.add_paragraph(f"答案：{ans}")
         doc.add_paragraph("来源：《合成示例管理规定》-第一章第一条")
     doc.add_paragraph("第二部分 多项选择题")
     stem, opts, ans = MULTIPLE[0]
     doc.add_paragraph(f"题干：{stem}")
-    doc.add_paragraph(" ".join(f"{lab}.{o}" for lab, o in zip("ABCD", opts)))
+    doc.add_paragraph(" ".join(f"{lab}.{o}" for lab, o in zip("ABCD", opts, strict=False)))
     doc.add_paragraph(f"答案：{ans}")
     path.parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(path))
@@ -272,12 +271,12 @@ def write_docx_table(path: Path) -> None:
         cells = table.add_row().cells
         cells[0].text = "单选题"
         cells[1].text = stem
-        cells[2].text = " ".join(f"{lab}.{o}" for lab, o in zip("ABCD", opts))
+        cells[2].text = " ".join(f"{lab}.{o}" for lab, o in zip("ABCD", opts, strict=False))
         cells[3].text = ans
     cells = table.add_row().cells
     cells[0].text = "多选题"
     cells[1].text = MULTIPLE[0][0]
-    cells[2].text = " ".join(f"{lab}.{o}" for lab, o in zip("ABCD", MULTIPLE[0][1]))
+    cells[2].text = " ".join(f"{lab}.{o}" for lab, o in zip("ABCD", MULTIPLE[0][1], strict=False))
     cells[3].text = MULTIPLE[0][2] + "（定）"
     path.parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(path))
@@ -326,16 +325,16 @@ def build_samples(out: Path) -> None:
 def _pdf_lines() -> list[str]:
     """「Word 导出型」PDF 示例的文本行：题干/答案分行，含一道判断题与一道「（定）」题。"""
     lines = ["合成示例题库（PDF 版）", "一、单项选择题"]
-    for i, (stem, opts, ans) in enumerate(SINGLE[:5], start=1):
+    for _i, (stem, opts, ans) in enumerate(SINGLE[:5], start=1):
         lines.append(f"题干：{stem}")
-        lines.append(" ".join(f"{lab}.{o}" for lab, o in zip("ABCD", opts)))
+        lines.append(" ".join(f"{lab}.{o}" for lab, o in zip("ABCD", opts, strict=False)))
         lines.append(f"答案：{ans}")
         lines.append("来源：《合成示例管理规定》")
     lines.append("二、多项选择题")
     for i, idx in enumerate([0, 1, FIXED_INDEX], start=1):     # 第 3 道为「（定）」固定顺序题
         stem, opts, ans = MULTIPLE[idx]
         lines.append(f"题干：{stem}")
-        lines.append(" ".join(f"{lab}.{o}" for lab, o in zip("ABCD", opts)))
+        lines.append(" ".join(f"{lab}.{o}" for lab, o in zip("ABCD", opts, strict=False)))
         lines.append(f"答案：{ans}{'（定）' if i == 3 else ''}")
     lines.append("三、判断题")
     for stem, ans in JUDGE[:2]:

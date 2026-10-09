@@ -32,10 +32,13 @@ jobs:
       - name: 生成合成示例题库与测试夹具
         run: python tools/make_samples.py
 
-      - name: 运行测试
+      - name: 代码检查（ruff）
+        run: ruff check src tools tests
+
+      - name: 运行测试（pytest）
         env:
           PYTHONIOENCODING: utf-8
-        run: python -m unittest discover -s tests -v
+        run: pytest -q
 
       - name: 生成图标
         run: python tools/make_icon.py

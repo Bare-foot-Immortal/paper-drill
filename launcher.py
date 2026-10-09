@@ -14,7 +14,7 @@ _src = _here / "src"
 if _src.is_dir():                      # 源码方式运行时启用
     sys.path.insert(0, str(_src))
 
-from paperdrill.__main__ import main    # noqa: E402
+from paperdrill.__main__ import main  # noqa: E402
 
 if __name__ == "__main__":
     raise SystemExit(main())
