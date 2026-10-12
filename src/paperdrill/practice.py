@@ -15,7 +15,7 @@ from typing import Iterable, Sequence
 
 from .models import OPTION_LABELS, QType, Question
 from .paper import Paper, PaperBlueprint
-from .store import ProgressStore, QRecord
+from .store import SESSION_WINDOW, ProgressStore, QRecord
 
 __all__ = ["PracticeMode", "Scope", "PracticeItem", "AnswerResult", "PracticeSession",
            "ExamSession", "ExamResult", "build_item", "DEFAULT_SCORES"]
@@ -347,9 +347,23 @@ class PracticeSession:
         return self.store.progress.stats(qs)
 
     # ------------------------------------------------------------ 会话持久化
+    def navigation_window(self, size: int = SESSION_WINDOW) -> list[Question]:
+        """当前位置起的若干道题（当前位置 + 其后若干题），用于按内容恢复位置。
+
+        只存序号在"随机练习 / 只练未做"模式下会错位：重开时队列会被重新洗牌或被重新过滤。
+        因此落盘的是一个**指纹窗口**，恢复时按窗口顺序依次匹配，当前题被移出队列时还能退到下一题。
+        """
+        if self.empty:
+            return []
+        out: list[Question] = []
+        for pos in range(self.cursor, min(len(self.order), self.cursor + max(1, size))):
+            out.append(self.questions[self.order[pos]])
+        return out
+
     def save_position(self, extra: "dict | None" = None) -> None:
         self.store.save_session(self.mode.value, self.current_question(), self.cursor,
                                 self.shuffle_single and self.shuffle_multiple,
+                                window=self.navigation_window(),
                                 extra={"shuffle_single": self.shuffle_single,
                                        "shuffle_multiple": self.shuffle_multiple,
                                        "scope": self.qtype_filter.key if self.qtype_filter else "all",
@@ -360,6 +374,10 @@ class PracticeSession:
 
         ``adopt_mode=True``（界面默认）会连同上次的模式、范围与打乱开关一起恢复；
         ``adopt_mode=False`` 只恢复位置，保留调用方显式指定的参数。
+
+        位置**优先按题目指纹**在重建后的队列中定位（``pos_fps`` 窗口，兼容旧的单个 ``last_fp``）；
+        只有指纹全部命中失败时才退化为按序号兜底，且此时返回 ``False``——
+        避免"提示已恢复、实际停在另一道题"的假成功。
         """
         saved = self.store.saved_session()
         if not saved:
@@ -378,17 +396,30 @@ class PracticeSession:
                 self.rebuild(mode)
             else:
                 self._items.clear()
-        fp = str(saved.get("last_fp", ""))
-        if fp and self.goto_question_fp(fp):
-            return True
+        for fp in self._saved_fingerprints(saved):
+            if self.goto_question_fp(fp):
+                return True
+        # 指纹全部落空 → 序号兜底（夹取到合法范围；返回 False 表示"不是精确恢复"）
         try:
             pos = int(saved.get("pos", 0) or 0)
         except (TypeError, ValueError):                # 进度文件被改坏时按"从头开始"处理
             pos = 0
-        if 0 <= pos < len(self.order):
-            self.cursor = pos
-            return True
+        if not self.order:
+            return False
+        self.cursor = max(0, min(pos, len(self.order) - 1))
         return False
+
+    @staticmethod
+    def _saved_fingerprints(saved: dict) -> list[str]:
+        """从会话信息中取出待匹配的指纹序列（窗口优先，兼容旧版单指纹）。"""
+        out: list[str] = []
+        raw = saved.get("pos_fps")
+        if isinstance(raw, (list, tuple)):
+            out.extend(str(fp) for fp in raw if isinstance(fp, str) and fp)
+        last = str(saved.get("last_fp", "") or "")
+        if last and last not in out:
+            out.append(last)
+        return out
 
 
 # ================================================================ 模拟考试

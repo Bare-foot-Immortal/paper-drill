@@ -5,9 +5,11 @@
 --------
 * 记录以**题目指纹**为键，与行号/顺序无关，因此题库增删、重排、换目录后进度仍可保留；
 * 文件标识 ``bank_key = 文件名 + 全库指纹摘要``；精确命中失败时按**内容重合度**继承旧进度；
+* **题库删减**（``excluded``）也保存在同一份进度文件里，剔除的题不参与练习与组卷；
 * 保存采用"临时文件 + os.replace"原子替换；读取损坏文件不抛异常。
 
 进度目录：``%APPDATA%/PaperDrill/progress/<bank_key>.json``
+题库库（最近使用的题库）：``%APPDATA%/PaperDrill/library.json``
 """
 from __future__ import annotations
 
@@ -18,13 +20,15 @@ import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Sequence
+from typing import Iterable, Sequence
 
 from .models import Question
 
-__all__ = ["QRecord", "ProgressStore", "progress_dir", "bank_key_of", "safe_name"]
+__all__ = ["QRecord", "ProgressStore", "BankLibrary", "library_path", "progress_dir",
+           "bank_key_of", "safe_name", "SESSION_WINDOW"]
 
 INHERIT_THRESHOLD = 0.6      # 内容重合度达到该比例才继承旧进度
+SESSION_WINDOW = 4           # 会话位置窗口：当前位置 + 其后 3 题（按指纹依次兜底）
 
 
 def _as_int(value: object, default: int = 0) -> int:
@@ -33,13 +37,18 @@ def _as_int(value: object, default: int = 0) -> int:
         return int(value)          # type: ignore[arg-type]
     except (TypeError, ValueError):
         return default
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def progress_dir() -> Path:
     base = os.environ.get("APPDATA") or os.environ.get("XDG_DATA_HOME")
     root = Path(base) if base else Path.home() / ".local" / "share"
     return root / "PaperDrill" / "progress"
+
+
+def library_path() -> Path:
+    """题库库文件（最近使用的题库列表），与进度文件分开放。"""
+    return progress_dir().parent / "library.json"
 
 
 def safe_name(text: str, max_len: int = 60) -> str:
@@ -119,6 +128,7 @@ class BankProgress:
     records: dict[str, QRecord] = field(default_factory=dict)
     session: dict = field(default_factory=dict)   # {"mode":..., "last_fp":..., "pos":int, ...}
     exams: list = field(default_factory=list)     # 模拟考试成绩单（最近 30 次）
+    excluded: dict = field(default_factory=dict)  # 题库删减：{指纹: {"stem":..., "ts":...}}
     created: str = ""
     updated: str = ""
     inherited_from: str = ""                      # 非空表示由旧进度继承而来
@@ -182,6 +192,61 @@ class BankProgress:
             self.updated = _now()
         return len(removed)
 
+    # ------------------------------------------------------------ 题库删减
+    def is_excluded(self, question: Question) -> bool:
+        return question.fingerprint in self.excluded
+
+    def active_questions(self, questions: Sequence[Question]) -> list[Question]:
+        """过滤掉已删减的题目（题库删减后参与练习/组卷的题目集）。"""
+        if not self.excluded:
+            return list(questions)
+        return [q for q in questions if q.fingerprint not in self.excluded]
+
+    def excluded_questions(self, questions: Sequence[Question]) -> list[Question]:
+        """在当前题库中找出已被删减的题目（按题库原顺序）。"""
+        return [q for q in questions if q.fingerprint in self.excluded]
+
+    def exclude(self, questions: Iterable[Question], stem_len: int = 80) -> int:
+        """把题目加入删减集；返回新增加的条数（已在集合中的不重复计数）。"""
+        added = 0
+        for q in questions:
+            fp = q.fingerprint
+            if fp in self.excluded:
+                continue
+            self.excluded[fp] = {"stem": (q.stem or "")[:stem_len], "ts": _now()}
+            added += 1
+        if added:
+            self.updated = _now()
+        return added
+
+    def include(self, questions: Iterable[Question]) -> int:
+        """把题目从删减集里恢复；返回实际恢复的条数。"""
+        removed = 0
+        for q in questions:
+            if self.excluded.pop(q.fingerprint, None) is not None:
+                removed += 1
+        if removed:
+            self.updated = _now()
+        return removed
+
+    def clear_excluded(self) -> int:
+        """一键恢复全部删减；返回恢复条数。"""
+        count = len(self.excluded)
+        if count:
+            self.excluded.clear()
+            self.updated = _now()
+        return count
+
+    def prune_excluded(self, questions: Sequence[Question]) -> int:
+        """清理题库中已不存在的剔除记录（题库换版后避免无限累积）。"""
+        alive = {q.fingerprint for q in questions}
+        stale = [fp for fp in self.excluded if fp not in alive]
+        for fp in stale:
+            del self.excluded[fp]
+        if stale:
+            self.updated = _now()
+        return len(stale)
+
     # ------------------------------------------------------------ 模拟考试成绩
     def add_exam_record(self, record: dict, keep: int = 30) -> None:
         """追加一条模拟考试成绩（最多保留 keep 条）。"""
@@ -202,6 +267,7 @@ class BankProgress:
             "updated": self.updated,
             "inherited_from": self.inherited_from,
             "records": {fp: rec.to_dict() for fp, rec in self.records.items() if rec.done},
+            "excluded": {fp: dict(info) for fp, info in self.excluded.items()},
             "session": self.session,
             "exams": self.exams,
         }
@@ -230,12 +296,22 @@ class BankProgress:
         prog.session = sess if isinstance(sess, dict) else {}
         exams = data.get("exams")
         prog.exams = [e for e in exams if isinstance(e, dict)] if isinstance(exams, list) else []
+        # 题库删减（schema 2 新增）：旧文件没有该字段 → 空集，直接可用
+        excluded = data.get("excluded")
+        if isinstance(excluded, dict):
+            for fp, info in excluded.items():
+                if not isinstance(fp, str) or not fp:
+                    continue
+                prog.excluded[fp] = dict(info) if isinstance(info, dict) else {}
+        elif isinstance(excluded, list):                   # 容忍手写成列表的旧格式
+            prog.excluded = {str(fp): {} for fp in excluded if isinstance(fp, str) and fp}
         return prog
 
     def summary_line(self, questions: Sequence[Question]) -> str:
         s = self.stats(questions)
+        cut = f"　已删减 {len(self.excluded)} 题" if self.excluded else ""
         return (f"{s['done']}/{s['total']} 题已练　正确率 {s['accuracy'] * 100:.1f}%　"
-                f"错题 {s['wrong_book']} 道　（更新于 {self.updated or '—'}）")
+                f"错题 {s['wrong_book']} 道{cut}　（更新于 {self.updated or '—'}）")
 
 
 class ProgressStore:
@@ -287,6 +363,9 @@ class ProgressStore:
             prog.bank_name = bank_name
             prog.question_total = len(questions)
             prog.inherited_from = src_path.name
+            # 题库删减同样跟随题库内容继承（只保留在新题库中仍能命中的指纹）
+            alive = {q.fingerprint for q in questions}
+            prog.excluded = {fp: info for fp, info in prog.excluded.items() if fp in alive}
             store = cls(prog, directory)
             store.save()                      # 立即另存为新标识，旧文件保留
             return store
@@ -357,6 +436,31 @@ class ProgressStore:
     def stats(self, questions: Sequence[Question]) -> dict:
         return self.progress.stats(questions)
 
+    # ------------------------------------------------------------ 题库删减
+    def active_questions(self, questions: Sequence[Question]) -> list[Question]:
+        return self.progress.active_questions(questions)
+
+    def excluded_questions(self, questions: Sequence[Question]) -> list[Question]:
+        return self.progress.excluded_questions(questions)
+
+    def is_excluded(self, question: Question) -> bool:
+        return self.progress.is_excluded(question)
+
+    def exclude(self, questions: Iterable[Question]) -> int:
+        added = self.progress.exclude(questions)
+        self._try_save()
+        return added
+
+    def include(self, questions: Iterable[Question]) -> int:
+        removed = self.progress.include(questions)
+        self._try_save()
+        return removed
+
+    def clear_excluded(self) -> int:
+        count = self.progress.clear_excluded()
+        self._try_save()
+        return count
+
     def save(self) -> Path:
         self.dir.mkdir(parents=True, exist_ok=True)
         if not self.progress.created:
@@ -383,10 +487,20 @@ class ProgressStore:
 
     # ------------------------------------------------------------ 会话位置
     def save_session(self, mode: str, last_question: "Question | None", pos: int,
-                     shuffle: bool, extra: "dict | None" = None) -> None:
+                     shuffle: bool, extra: "dict | None" = None,
+                     window: "Sequence[Question] | None" = None) -> None:
+        """保存会话位置。
+
+        ``window`` 为**导航窗口**（当前位置起的若干道题），按顺序落盘到 ``pos_fps``。
+        只靠 ``pos``（序号）在随机/只练未做模式下会错位，恢复时必须以指纹为准。
+        """
+        fps = [q.fingerprint for q in (window or []) if q is not None]
+        if not fps and last_question is not None:
+            fps = [last_question.fingerprint]
         self.progress.session = {
             "mode": mode,
-            "last_fp": last_question.fingerprint if last_question else "",
+            "last_fp": last_question.fingerprint if last_question else (fps[0] if fps else ""),
+            "pos_fps": fps,
             "pos": int(pos),
             "shuffle": bool(shuffle),
             "ts": _now(),
@@ -432,6 +546,8 @@ class ProgressStore:
                 "wrong_book": sum(1 for r in prog.records.values() if r.in_wrong_book),
                 "accuracy": (right / attempts) if attempts else 0.0,
                 "exams": len(prog.exams),
+                "excluded": len(prog.excluded),
+                "active": max(0, prog.question_total - len(prog.excluded)),
                 "updated": prog.updated,
                 "broken": False,
             })
@@ -447,6 +563,138 @@ class ProgressStore:
             return True
         except OSError:
             return False
+
+
+class BankLibrary:
+    """题库库：记住最近使用过的题库文件，供"题库选择"界面使用。
+
+    * 与进度文件分离（``library.json``），只保存路径与展示用摘要；
+    * 只记录、**绝不删除**磁盘上的题库文件（``forget`` 仅移除记录）；
+    * 文件损坏或字段非法 → 整体降级为空库，不影响启动。
+    """
+
+    MAX_ENTRIES = 32
+
+    def __init__(self, entries: "Sequence[dict] | None" = None,
+                 path: "Path | None" = None) -> None:
+        self.path = Path(path) if path else library_path()
+        self.entries: list[dict] = []
+        for item in entries or []:
+            rec = self._clean(item)
+            if rec:
+                self.entries.append(rec)
+        self._dedupe()
+
+    # ------------------------------------------------------------ 构造
+    @staticmethod
+    def _clean(item: object) -> "dict | None":
+        if not isinstance(item, dict):
+            return None
+        path = str(item.get("path", "") or "").strip()
+        if not path:
+            return None
+        try:
+            total = int(item.get("total", 0) or 0)
+        except (TypeError, ValueError):
+            total = 0
+        return {"path": path,
+                "name": str(item.get("name", "") or Path(path).stem),
+                "total": max(0, total),
+                "last_used": str(item.get("last_used", "") or "")}
+
+    def _dedupe(self) -> None:
+        """同一路径只保留一条（保留 last_used 更新的一条），并按最近使用倒序。"""
+        merged: dict[str, dict] = {}
+        for rec in self.entries:
+            key = _norm_path_key(rec["path"])
+            old = merged.get(key)
+            if old is None or (rec["last_used"] or "") >= (old["last_used"] or ""):
+                merged[key] = rec
+        self.entries = sorted(merged.values(), key=lambda r: r["last_used"] or "", reverse=True)
+        del self.entries[self.MAX_ENTRIES:]
+
+    # ------------------------------------------------------------ 读写
+    @classmethod
+    def load(cls, path: "Path | None" = None) -> "BankLibrary":
+        p = Path(path) if path else library_path()
+        data = _read_json(p)
+        if not isinstance(data, dict):
+            return cls([], p)
+        raw = data.get("banks")
+        if not isinstance(raw, list):
+            return cls([], p)
+        return cls(raw, p)
+
+    def save(self) -> Path:
+        self._dedupe()
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps({"schema": 1, "banks": self.entries},
+                             ensure_ascii=False, indent=2)
+        tmp = self.path.with_suffix(f".json.{os.getpid()}.tmp")
+        tmp.write_text(payload, encoding="utf-8")
+        os.replace(tmp, self.path)
+        return self.path
+
+    # ------------------------------------------------------------ 增删查
+    def remember(self, path: "str | Path", name: str = "", total: int = 0) -> dict:
+        """记录/更新一条题库（同一路径只保留一条，并置顶）。"""
+        p = str(Path(path))
+        rec = {"path": p, "name": name or Path(p).stem, "total": max(0, int(total or 0)),
+               "last_used": _now()}
+        key = _norm_path_key(p)
+        self.entries = [e for e in self.entries if _norm_path_key(e["path"]) != key]
+        self.entries.insert(0, rec)
+        del self.entries[self.MAX_ENTRIES:]
+        try:
+            self.save()
+        except OSError:
+            pass
+        return rec
+
+    def forget(self, path: "str | Path") -> bool:
+        """只从列表移除记录，**不删除磁盘上的题库文件**。"""
+        key = _norm_path_key(str(Path(path)))
+        before = len(self.entries)
+        self.entries = [e for e in self.entries if _norm_path_key(e["path"]) != key]
+        changed = len(self.entries) != before
+        if changed:
+            try:
+                self.save()
+            except OSError:
+                pass
+        return changed
+
+    def get(self, path: "str | Path") -> "dict | None":
+        key = _norm_path_key(str(Path(path)))
+        for e in self.entries:
+            if _norm_path_key(e["path"]) == key:
+                return dict(e)
+        return None
+
+    def most_recent(self, must_exist: bool = True) -> "dict | None":
+        """最近使用且（默认）文件仍存在的题库。"""
+        for e in self.entries:
+            if not must_exist or Path(e["path"]).is_file():
+                return dict(e)
+        return None
+
+    def existing(self) -> list[dict]:
+        return [dict(e) for e in self.entries if Path(e["path"]).is_file()]
+
+    def missing(self) -> list[dict]:
+        return [dict(e) for e in self.entries if not Path(e["path"]).is_file()]
+
+    def __len__(self) -> int:
+        return len(self.entries)
+
+
+def _norm_path_key(path: str) -> str:
+    """路径去重键：Windows 下大小写与斜杠差异视为同一路径。"""
+    try:
+        p = str(Path(path))
+    except (TypeError, ValueError):
+        p = str(path or "")
+    return os.path.normcase(os.path.normpath(p)) if p else ""
 
 
 def _read_json(path: Path) -> "dict | None":

@@ -22,7 +22,7 @@ from openpyxl import Workbook  # noqa: E402
 from paperdrill.bank_io import TextLine, lines_to_questions, load_bank  # noqa: E402
 from paperdrill.models import QType  # noqa: E402
 from paperdrill.practice import PracticeMode, PracticeSession  # noqa: E402
-from paperdrill.store import ProgressStore  # noqa: E402
+from paperdrill.store import BankLibrary, ProgressStore  # noqa: E402
 
 FIXTURE_BANK = ROOT / "fixtures" / "样例题库.xlsx"
 
@@ -204,6 +204,308 @@ class TestStoreReviewFixes(unittest.TestCase):
         same_other_name = load_bank(xlsx(self.tmp / "renamed.xlsx", bank_rows(10))).questions
         inherited = ProgressStore.load_for("乙库", same_other_name, pg)
         self.assertEqual(sum(1 for q in same_other_name if inherited.progress.record_of(q).done), 5)
+
+
+class TestResumeAndBankFiltering(unittest.TestCase):
+    """v1.2.4：进度延续（随机/未做模式）+ 题库删减 + 题库选择。"""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="pd_v124_"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def _questions(self, n: int, start: int = 0):
+        p = xlsx(self.tmp / f"bank_{n}_{start}.xlsx", bank_rows(n, start))
+        return load_bank(p).questions
+
+    def _advanced(self, qs, *, mode=PracticeMode.ORDER, answered=0, extra=0):
+        """建一个会话，答 answered 题后再往后走 extra 题。"""
+        st = ProgressStore.load_for("延续库", qs, self.tmp / "pg")
+        s = PracticeSession(qs, st, mode=mode, seed=11)
+        for i in range(min(answered, s.total)):
+            item = s.current_item()
+            sel = set(item.shown_answer) if i % 2 == 0 else {
+                lab for lab in item.labels if lab not in item.shown_answer}
+            s.submit(sel)
+            s.advance()
+        for _ in range(extra):
+            s.advance()
+        s.save_position()
+        return st, s
+
+    # ---------------------------------------------------------- 进度延续
+    def test_random_mode_resumes_same_question(self):
+        """随机练习：重开后必须仍停在关闭前那道题（旧版按序号恢复会漂到别的题）。"""
+        qs = self._questions(60)
+        _, s = self._advanced(qs, mode=PracticeMode.RANDOM, answered=25, extra=3)
+        before = s.current_question()
+        self.assertIsNotNone(before)
+        # 新会话用不同的随机种子 → 队列顺序与关闭前完全不同
+        st2 = ProgressStore.load_for("延续库", qs, self.tmp / "pg")
+        s2 = PracticeSession(qs, st2, mode=PracticeMode.ORDER, seed=99)
+        self.assertTrue(s2.restore_position())
+        self.assertIs(s2.mode, PracticeMode.RANDOM)
+        self.assertEqual(s2.current_question().fingerprint, before.fingerprint)
+
+    def test_fresh_mode_resumes_same_question(self):
+        """只练未做：作答后队列会被重建，也必须按指纹停回原题。"""
+        qs = self._questions(40)
+        _, s = self._advanced(qs, mode=PracticeMode.FRESH, answered=10, extra=2)
+        before = s.current_question()
+        st2 = ProgressStore.load_for("延续库", qs, self.tmp / "pg")
+        s2 = PracticeSession(qs, st2, mode=PracticeMode.ORDER, seed=5)
+        self.assertTrue(s2.restore_position())
+        self.assertEqual(s2.current_question().fingerprint, before.fingerprint)
+
+    def test_position_window_survives_cut_question(self):
+        """当前位置的题被移出队列时，靠窗口里的下一题继续，而不是漂到无关的题。"""
+        qs = self._questions(40)
+        _, s = self._advanced(qs, mode=PracticeMode.ORDER, answered=8)
+        window = [q.fingerprint for q in s.navigation_window()]
+        self.assertGreaterEqual(len(window), 2)
+        # 模拟：窗口第 1 题在重开后已不在队列里（例如被删减）
+        from paperdrill.practice import PracticeSession as PS
+
+        st2 = ProgressStore.load_for("延续库", qs, self.tmp / "pg")
+        s2 = PS(qs, st2, mode=PracticeMode.ORDER, seed=1)
+        s2.order = [i for i in s2.order if qs[i].fingerprint != window[0]]
+        self.assertTrue(s2.restore_position())
+        self.assertEqual(s2.current_question().fingerprint, window[1])
+
+    def test_legacy_single_fingerprint_session_still_restores(self):
+        """兼容旧版进度文件（只有 last_fp，没有 pos_fps）。"""
+        qs = self._questions(20)
+        st = ProgressStore.load_for("旧会话库", qs, self.tmp / "pg")
+        st.progress.session = {"mode": "random", "last_fp": qs[7].fingerprint,
+                               "pos": 3, "shuffle": True}
+        st.save()
+        st2 = ProgressStore.load_for("旧会话库", qs, self.tmp / "pg")
+        s2 = PracticeSession(qs, st2, mode=PracticeMode.RANDOM, seed=3)
+        self.assertTrue(s2.restore_position())
+        self.assertEqual(s2.current_question().fingerprint, qs[7].fingerprint)
+
+    def test_wrong_mode_hit_removed_from_queue_does_not_misfire(self):
+        """错题重练：命中的错题答对后移出队列 → 退化为序号兜底，但不许报"精确恢复"。"""
+        qs = self._questions(30)
+        st = ProgressStore.load_for("错题库", qs, self.tmp / "pg")
+        for q in qs[:9]:                      # 制造 9 道错题
+            st.progress.apply_answer(q, False)
+        st.save()
+        s = PracticeSession(qs, st, mode=PracticeMode.WRONG, seed=2)
+        s.goto(4)
+        target = s.current_question().fingerprint
+        s.save_position()
+        st2 = ProgressStore.load_for("错题库", qs, self.tmp / "pg")
+        s2 = PracticeSession(qs, st2, mode=PracticeMode.WRONG, seed=2)
+        self.assertTrue(s2.restore_position())
+        self.assertEqual(s2.current_question().fingerprint, target)
+
+    def test_dirty_pos_does_not_fake_success(self):
+        """指纹全部落空 + pos 超界 → 夹取到合法位置且返回 False（不是假成功）。"""
+        qs = self._questions(10)
+        st = ProgressStore.load_for("脏位置库", qs, self.tmp / "pg")
+        st.progress.session = {"mode": "order", "last_fp": "deadbeef",
+                               "pos_fps": ["nope1", "nope2"], "pos": 9999}
+        st.save()
+        st2 = ProgressStore.load_for("脏位置库", qs, self.tmp / "pg")
+        s2 = PracticeSession(qs, st2, mode=PracticeMode.ORDER, seed=1)
+        self.assertFalse(s2.restore_position())
+        self.assertEqual(s2.position, 10)     # 夹取到最后一题，不越界
+
+    # ---------------------------------------------------------- 题库删减
+    def test_exclude_persists_and_filters(self):
+        qs = self._questions(30)
+        st = ProgressStore.load_for("删减库", qs, self.tmp / "pg")
+        self.assertEqual(st.exclude(qs[:7]), 7)
+        self.assertEqual(st.exclude(qs[:7]), 0)            # 幂等
+        self.assertEqual(len(st.excluded_questions(qs)), 7)
+        active = st.active_questions(qs)
+        self.assertEqual(len(active), 23)
+        self.assertFalse({q.fingerprint for q in qs[:7]} & {q.fingerprint for q in active})
+        # 重开仍生效
+        st2 = ProgressStore.load_for("删减库", qs, self.tmp / "pg")
+        self.assertEqual(len(st2.progress.excluded), 7)
+        self.assertEqual(len(st2.active_questions(qs)), 23)
+        self.assertEqual(st2.include(qs[:3]), 3)
+        self.assertEqual(len(st2.active_questions(qs)), 26)
+        self.assertEqual(st2.clear_excluded(), 4)
+        self.assertEqual(len(st2.active_questions(qs)), 30)
+
+    def test_exclude_survives_old_schema_file(self):
+        """schema 1 的旧进度文件（无 excluded 字段）必须能直接读，且删减可用。"""
+        pg = self.tmp / "pg_old"
+        pg.mkdir(parents=True, exist_ok=True)
+        qs = self._questions(8)
+        from paperdrill.store import bank_key_of
+
+        key = bank_key_of("旧格式库", qs)
+        (pg / f"{key}.json").write_text(json.dumps({
+            "schema": 1, "bank_key": key, "bank_name": "旧格式库", "question_total": 8,
+            "records": {qs[0].fingerprint: {"right": 1, "wrong": 0, "last": "right", "streak": 1}},
+            "session": {}, "exams": []}, ensure_ascii=False), encoding="utf-8")
+        st = ProgressStore.load_for("旧格式库", qs, pg)
+        self.assertEqual(st.stats(qs)["done"], 1)          # 旧记录仍在
+        self.assertEqual(st.exclude(qs[1:3]), 2)
+        st.save()
+        again = json.loads((pg / f"{key}.json").read_text(encoding="utf-8"))
+        self.assertEqual(again["schema"], 2)
+        self.assertEqual(len(again["excluded"]), 2)
+        self.assertIn("stem", again["excluded"][qs[1].fingerprint])
+
+    def test_excluded_inherited_when_bank_renamed(self):
+        """题库改名/挪目录时，仍能命中的删减记录随之继承。"""
+        pg = self.tmp / "pg_inh"
+        full = self._questions(20)
+        st = ProgressStore.load_for("甲库", full, pg)
+        for q in full:
+            st.progress.apply_answer(q, {"A"})             # 保证可继承
+        st.exclude(full[:5])
+        st.save()
+        same = load_bank(xlsx(self.tmp / "renamed.xlsx", bank_rows(20))).questions
+        st2 = ProgressStore.load_for("乙库", same, pg)
+        self.assertEqual(len(st2.progress.excluded), 5)
+        self.assertEqual(len(st2.active_questions(same)), 15)
+
+    def test_prune_excluded_drops_stale_records(self):
+        qs = self._questions(10)
+        st = ProgressStore.load_for("换版库", qs, self.tmp / "pg")
+        st.exclude(qs[:4])
+        st.progress.excluded["deadbeefdead"] = {"stem": "已不存在的题"}
+        self.assertEqual(st.progress.prune_excluded(qs), 1)
+        self.assertEqual(len(st.progress.excluded), 4)
+
+    def test_excluded_does_not_count_as_progress(self):
+        """删减只影响参与集合，不影响已作答统计口径。"""
+        qs = self._questions(12)
+        st = ProgressStore.load_for("口径库", qs, self.tmp / "pg")
+        for q in qs:
+            st.progress.apply_answer(q, True)
+        st.exclude(qs[:4])
+        active = st.active_questions(qs)
+        self.assertEqual(st.stats(active)["done"], 8)
+        self.assertEqual(st.stats(qs)["done"], 12)
+
+    def test_list_all_reports_excluded(self):
+        qs = self._questions(15)
+        st = ProgressStore.load_for("列表库", qs, self.tmp / "pg")
+        st.exclude(qs[:5])
+        rows = ProgressStore.list_all(self.tmp / "pg")
+        row = next(r for r in rows if r["name"] == "列表库")
+        self.assertEqual(row["excluded"], 5)
+        self.assertEqual(row["active"], 10)
+        self.assertEqual(row["total"], 15)
+
+
+class TestBankLibrary(unittest.TestCase):
+    """v1.2.4：题库库（最近使用的题库）——只记录，不删文件。"""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="pd_lib_"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.lib_path = self.tmp / "library.json"
+
+    def _bank_file(self, name: str) -> Path:
+        p = self.tmp / f"{name}.xlsx"
+        p.write_bytes(b"not a real bank")
+        return p
+
+    def test_remember_dedupe_and_order(self):
+        lib = BankLibrary([], self.lib_path)
+        a, b = self._bank_file("甲"), self._bank_file("乙")
+        lib.remember(a, "甲库", 10)
+        lib.remember(b, "乙库", 20)
+        lib.remember(a, "甲库改名", 12)                    # 同路径 → 更新并置顶
+        self.assertEqual(len(lib), 2)
+        self.assertEqual(lib.entries[0]["path"], str(a))
+        self.assertEqual(lib.entries[0]["name"], "甲库改名")
+        self.assertEqual(lib.entries[0]["total"], 12)
+
+    def test_persist_and_missing_detection(self):
+        lib = BankLibrary([], self.lib_path)
+        a = self._bank_file("存在")
+        gone = self.tmp / "不存在.xlsx"
+        lib.remember(a, "存在库", 3)
+        lib.remember(gone, "丢失库", 0)
+        self.assertEqual(lib.save(), self.lib_path)
+        again = BankLibrary.load(self.lib_path)
+        self.assertEqual(len(again), 2)
+        self.assertEqual(len(again.existing()), 1)
+        self.assertEqual(len(again.missing()), 1)
+        self.assertEqual(again.most_recent()["path"], str(a))   # 跳过不存在的
+
+    def test_forget_keeps_file_on_disk(self):
+        lib = BankLibrary([], self.lib_path)
+        a = self._bank_file("保留")
+        lib.remember(a, "保留库", 1)
+        self.assertTrue(lib.forget(a))
+        self.assertEqual(len(lib), 0)
+        self.assertTrue(a.is_file(), "移除记录不应删除题库文件")
+        self.assertFalse(lib.forget(a))                    # 幂等
+
+    def test_corrupt_file_degrades_to_empty(self):
+        self.lib_path.write_text("{ not json", encoding="utf-8")
+        self.assertEqual(len(BankLibrary.load(self.lib_path)), 0)
+        self.lib_path.write_text(json.dumps({"banks": "oops"}), encoding="utf-8")
+        self.assertEqual(len(BankLibrary.load(self.lib_path)), 0)
+        self.lib_path.write_text(json.dumps({"banks": [{"path": ""}, 7, {"path": "   "}]}),
+                                 encoding="utf-8")
+        self.assertEqual(len(BankLibrary.load(self.lib_path)), 0)
+
+    def test_entry_limit(self):
+        lib = BankLibrary([], self.lib_path)
+        for i in range(BankLibrary.MAX_ENTRIES + 10):
+            lib.remember(self._bank_file(f"bank{i}"), f"库{i}", i)
+        self.assertEqual(len(lib), BankLibrary.MAX_ENTRIES)
+        self.assertEqual(lib.entries[0]["name"], f"库{BankLibrary.MAX_ENTRIES + 9}")
+
+
+class TestBankFolderScan(unittest.TestCase):
+    """v1.2.4：题库选择里的「扫描文件夹」（递归、按后缀过滤、跳过临时文件）。"""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="pd_scan_"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def test_scan_finds_supported_and_skips_others(self):
+        from paperdrill.gui import scan_bank_folder
+
+        (self.tmp / "sub").mkdir()
+        xlsx(self.tmp / "a.xlsx", bank_rows(3))
+        xlsx(self.tmp / "sub" / "b.xlsx", bank_rows(3))
+        (self.tmp / "note.txt").write_text("x", encoding="utf-8")     # txt 是支持的
+        (self.tmp / "readme.md").write_text("x", encoding="utf-8")    # 不支持
+        (self.tmp / "~$lock.xlsx").write_bytes(b"x")                  # Excel 临时文件
+        (self.tmp / "image.png").write_bytes(b"x")
+        found = [p.name for p in scan_bank_folder(self.tmp)]
+        self.assertIn("a.xlsx", found)
+        self.assertIn("b.xlsx", found)
+        self.assertIn("note.txt", found)
+        self.assertNotIn("readme.md", found)
+        self.assertNotIn("~$lock.xlsx", found)
+        self.assertNotIn("image.png", found)
+
+    def test_scan_respects_limit_and_bad_folder(self):
+        from paperdrill.gui import scan_bank_folder
+
+        for i in range(6):
+            xlsx(self.tmp / f"b{i}.xlsx", bank_rows(2))
+        self.assertEqual(len(scan_bank_folder(self.tmp, limit=3)), 3)
+        self.assertEqual(scan_bank_folder(self.tmp / "nope"), [])
+        not_a_dir = self.tmp / "file.xlsx"
+        not_a_dir.write_bytes(b"x")
+        self.assertEqual(scan_bank_folder(not_a_dir), [])
+
+    def test_quick_bank_info_counts_and_degrades(self):
+        from paperdrill.gui import quick_bank_info
+
+        p = xlsx(self.tmp / "ok.xlsx", bank_rows(7))
+        name, total = quick_bank_info(p)
+        self.assertEqual(name, "ok")
+        self.assertEqual(total, 7)
+        bad = self.tmp / "bad.xlsx"
+        bad.write_bytes(b"not a workbook")
+        name2, total2 = quick_bank_info(bad)          # 不得抛异常
+        self.assertEqual(name2, "bad")
+        self.assertEqual(total2, 0)
 
 
 if __name__ == "__main__":

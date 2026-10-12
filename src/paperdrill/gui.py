@@ -21,7 +21,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from . import __app_name__, __version__
-from .bank_io import bank_stats, load_bank
+from .bank_io import SUPPORTED_SUFFIXES, bank_stats, load_bank
 from .config import AppSettings
 from .models import QType
 from .paper import GenerationError, generate_round, min_round_length
@@ -32,7 +32,7 @@ from .practice import (
     PracticeSession,
     Scope,
 )
-from .store import ProgressStore, progress_dir
+from .store import BankLibrary, ProgressStore, bank_key_of, progress_dir
 
 HELP_TEXT = """【刷题匠 PaperDrill 使用说明】
 
@@ -78,8 +78,12 @@ HELP_TEXT = """【刷题匠 PaperDrill 使用说明】
 ──────────────────────────────────────────────
 四、进度自动保留
   每道题的作答记录会实时保存；再次打开同一题库会自动接着上次继续。
+  · 恢复位置按题目内容定位：随机练习、只练未做等模式重新打开后，
+    仍会停在关闭前那道题（不是按序号猜的）
   · 题库增删题目、换目录、改文件名，只要题目内容没变，进度依然保留
   · 不同题库各自独立记录，互不干扰
+  · 「练习 → 题库删减…」把不想练的题目剔除出练习与组卷（不改题库原文件）
+  · 「文件 → 选择题库…」查看最近用过的题库并一键切换
   · 「练习 → 进度管理」可查看/重置各题库进度
   · 进度文件位置：%APPDATA%\\PaperDrill\\progress\\
 
@@ -87,10 +91,56 @@ HELP_TEXT = """【刷题匠 PaperDrill 使用说明】
   答错（练习或考试）的题自动进入错题本；答对后自动移出。
   「练习 → 错题本」可查看错题、一键只练错题、清空错题标记。
 
-六、快捷键
-  Ctrl+O 导入题库   Ctrl+W 错题本   Ctrl+P 进度管理   F1 使用说明
+六、题库删减（菜单 练习 → 题库删减…）
+  把题库里不想练的题目移出练习队列与模拟考试组卷：
+  · 左侧「参与练习」勾选题目 →「删减选中题目 →」
+  · 右侧「已删减」勾选题目 →「← 恢复选中题目」，或「全部恢复」
+  · 支持按题型筛选、按题干/选项关键词搜索，可「查看题目内容」
+  · 删减结果按题库保存，重开软件后依然生效
+  · 不会修改题库原文件，随时可以恢复
+
+七、选择题库（菜单 文件 → 选择题库…）
+  · 列出最近用过的题库（路径、题数、最后使用时间），双击即载入
+  · 「扫描文件夹…」递归找出某个目录下的全部题库文件并加入列表
+  · 「移除记录」只从列表移除；「移除记录并清空进度」会额外删除该题库的练习进度
+  · 两者都不会删除磁盘上的题库文件
+
+八、快捷键
+  Ctrl+O 导入题库   Ctrl+B 选择题库   Ctrl+W 错题本   Ctrl+P 进度管理   F1 使用说明
   F5 生成一轮试卷    F9 交卷        1~8/A~H 选项    Enter 提交/下一题
 """
+
+
+MAX_SCAN_FILES = 500         # 扫描文件夹时最多收录多少个题库文件（防止误选超大目录）
+
+
+def scan_bank_folder(folder: "str | Path", limit: int = MAX_SCAN_FILES) -> list[Path]:
+    """递归扫描文件夹，返回受支持的题库文件（按路径排序，最多 limit 个）。"""
+    root = Path(folder)
+    if not root.is_dir():
+        return []
+    out: list[Path] = []
+    try:
+        for path in sorted(root.rglob("*")):
+            if len(out) >= limit:
+                break
+            if not path.is_file() or path.name.startswith("~$"):
+                continue
+            if path.suffix.lower() in SUPPORTED_SUFFIXES:
+                out.append(path)
+    except OSError:
+        pass
+    return out
+
+
+def quick_bank_info(path: "str | Path") -> tuple[str, int]:
+    """快速取题库的显示名与题数；解析失败时返回（文件名, 0），不抛异常。"""
+    p = Path(path)
+    try:
+        result = load_bank(str(p))
+        return (p.stem, len(result.questions))
+    except Exception:
+        return (p.stem, 0)
 
 
 class PaperDrillApp(tk.Tk):
@@ -102,12 +152,13 @@ class PaperDrillApp(tk.Tk):
         self._settings_path = settings_path
         self.settings = settings if settings is not None else AppSettings.load(settings_path)
 
-        self.bank = None                 # BankLoadResult
+        self.bank = None                 # BankLoadResult（题库原文件的全量题目）
         self.store: ProgressStore | None = None
         self.session: PracticeSession | None = None
         self.round = None                # PaperRound
         self.exam: ExamSession | None = None
         self.exam_index = 0
+        self.library = BankLibrary.load()     # 题库库（最近使用的题库）
 
         self._answer_widgets: list = []
         self._option_vars: dict = {}
@@ -128,8 +179,16 @@ class PaperDrillApp(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
         bank = initial_bank or self.settings.bank_path
-        if bank and Path(bank).exists():
-            self.after(150, lambda: self._import_bank(bank))
+        if not (bank and Path(bank).is_file()):
+            # 上次的题库被移动/删除 → 退回题库库中最近的可用题库，避免"打开就是空界面"
+            recent = self.library.most_recent()
+            bank = recent["path"] if recent else ""
+        if bank and Path(bank).is_file():
+            self.after(150, lambda: self._auto_load(bank))
+        elif bank:
+            self.set_status(f"上次的题库已不存在：{bank}　（文件 → 选择题库… 可重新指定）")
+            if initial_bank:
+                self.after(200, lambda: messagebox.showerror("题库不存在", f"找不到文件：\n{bank}"))
 
     # ================================================================ 变量
     def _init_vars(self) -> None:
@@ -182,6 +241,7 @@ class PaperDrillApp(tk.Tk):
         menubar = tk.Menu(self)
         m_file = tk.Menu(menubar, tearoff=0)
         m_file.add_command(label="导入题库…", accelerator="Ctrl+O", command=self._choose_bank)
+        m_file.add_command(label="选择题库…", accelerator="Ctrl+B", command=self._show_bank_picker)
         m_file.add_command(label="重新载入当前题库", command=self._reload_bank)
         m_file.add_separator()
         m_file.add_command(label="打开进度目录", command=self._open_progress_dir)
@@ -199,6 +259,7 @@ class PaperDrillApp(tk.Tk):
         m_prac.add_command(label="重新开始本轮（不清进度）", command=self._restart_round)
         m_prac.add_command(label="重置本题库进度…", command=self._reset_progress)
         m_prac.add_separator()
+        m_prac.add_command(label="题库删减…", command=self._show_question_filter)
         m_prac.add_command(label="错题本…", accelerator="Ctrl+W", command=self._show_wrong_book)
         m_prac.add_command(label="进度管理…", accelerator="Ctrl+P", command=self._show_progress_manager)
         menubar.add_cascade(label="练习", menu=m_prac)
@@ -226,6 +287,7 @@ class PaperDrillApp(tk.Tk):
             self.bind_all(sequence, handler, add="+")
         self.bind_all("<Key>", self._on_key, add="+")
         for sequence, command in (("<Control-o>", self._choose_bank),
+                                  ("<Control-b>", self._show_bank_picker),
                                   ("<Control-w>", self._show_wrong_book),
                                   ("<Control-p>", self._show_progress_manager),
                                   ("<F1>", self._show_help),
@@ -554,6 +616,15 @@ class PaperDrillApp(tk.Tk):
         self.analysis_box.configure(state="disabled")
 
     # ================================================================ 题库
+    def _auto_load(self, path: str) -> None:
+        """启动时的延迟载入：窗口可能已被关闭（或已被自动化用例销毁）→ 直接跳过。"""
+        try:
+            if not self.winfo_exists():
+                return
+        except Exception:
+            return
+        self._import_bank(path)
+
     def _choose_bank(self) -> None:
         path = filedialog.askopenfilename(
             title="选择题库文件",
@@ -570,9 +641,34 @@ class PaperDrillApp(tk.Tk):
         if self.bank and self.bank.source:
             self._import_bank(self.bank.source)
 
-    def _import_bank(self, path: str) -> None:
+    # ---------------------------------------------------------------- 有效题目集
+    def all_questions(self) -> list:
+        """题库原文件解析出的**全量**题目（不扣除删减）。"""
+        return list(self.bank.questions) if self.bank else []
+
+    def active_questions(self) -> list:
+        """扣掉「题库删减」后，真正参与练习与组卷的题目。"""
+        questions = self.all_questions()
+        if not questions or self.store is None:
+            return questions
+        try:
+            return self.store.active_questions(questions)
+        except Exception:
+            return questions
+
+    def _renormalize(self) -> None:
+        """题库换版后清理已失效的删减记录（题目已不存在）。"""
+        if self.store is None or not self.bank:
+            return
+        try:
+            if self.store.progress.prune_excluded(self.bank.questions):
+                self.store.save()
+        except Exception:
+            pass
+
+    def _import_bank(self, path: str, remember: bool = True) -> None:
         path = (path or "").strip().strip('"')
-        if not path or not Path(path).exists():
+        if not path or not Path(path).is_file():
             messagebox.showerror("题库不存在", f"找不到文件：\n{path}")
             return
         self.config(cursor="watch")
@@ -603,14 +699,20 @@ class PaperDrillApp(tk.Tk):
                 "进度文件异常",
                 f"读取原有进度时出现问题，已按空进度继续：\n{exc}\n\n"
                 "如反复出现，可在「进度管理」里删除该题库进度后重试。")
+        self._renormalize()
         if not self.store._try_save():
             self.set_status(f"⚠ 进度未能保存：{self.store.last_save_error}")
         self._refresh_stats()
 
         self.settings.bank_path = path
         self._save_settings()
+        if remember:
+            try:
+                self.library.remember(path, Path(path).stem, len(result.questions))
+            except Exception:
+                pass
 
-        self.session = PracticeSession(result.questions, self.store,
+        self.session = PracticeSession(self.active_questions(), self.store,
                                        mode=PracticeMode.from_label(self.mode_var.get()),
                                        qtype_filter=Scope.from_label(self.scope_var.get()).qtype,
                                        shuffle_single=self.shuffle_single_var.get(),
@@ -628,8 +730,10 @@ class PaperDrillApp(tk.Tk):
         self._refresh_plan_hint()
         self._render_current()
         self._refresh_stats()
-        self.set_status(f"已恢复上次练习进度（第 {self.session.position} 题）" if restored
-                        else "题库导入成功，开始练习")
+        cut = len(self.store.progress.excluded)
+        note = f"（已删减 {cut} 题）" if cut else ""
+        self.set_status(f"已恢复上次练习进度（第 {self.session.position} 题）{note}" if restored
+                        else f"题库导入成功，开始练习{note}")
         if result.issues:
             detail = "\n".join(str(i) for i in result.issues[:15])
             more = f"\n…… 其余 {len(result.issues) - 15} 条省略" if len(result.issues) > 15 else ""
@@ -642,9 +746,11 @@ class PaperDrillApp(tk.Tk):
             return
         s = self.session.stats()
         stats = bank_stats(self.session.questions)
+        cut = len(self.store.progress.excluded) if self.store else 0
+        cut_note = f"　｜　已删减 {cut} 题" if cut else ""
         self.stats_var.set(
             f"共 {stats['total']} 题：单选 {stats['single']}、多选 {stats['multiple']}、"
-            f"判断 {stats['judge']}；含固定顺序题 {stats['fixed']} 道"
+            f"判断 {stats['judge']}；含固定顺序题 {stats['fixed']} 道{cut_note}"
             f"　｜　已练 {s['done']} 题　正确率 {s['accuracy'] * 100:.1f}%　错题 {s['wrong_book']} 道")
 
     def _open_progress_dir(self) -> None:
@@ -725,7 +831,7 @@ class PaperDrillApp(tk.Tk):
                                    "（已练题数、错题本、正确率、历史成绩都会清空，不可撤销）"):
             return
         self.store.reset()
-        self.session = PracticeSession(self.bank.questions, self.store, mode=self.session.mode,
+        self.session = PracticeSession(self.active_questions(), self.store, mode=self.session.mode,
                                        qtype_filter=self.session.qtype_filter,
                                        shuffle_single=self.shuffle_single_var.get(),
                                        shuffle_multiple=self.shuffle_multiple_var.get())
@@ -1102,15 +1208,16 @@ class PaperDrillApp(tk.Tk):
         full = bp.single * self._scores()["single"] + bp.multiple * self._scores()["multiple"] \
             + bp.judge * self._scores()["judge"]
         self.plan_total_var.set(f"→ 每卷合计 {bp.total} 题，满分 {full:g} 分")
-        if not self.bank or not self.bank.questions or bp.total <= 0:
+        questions = self.active_questions()
+        if not questions or bp.total <= 0:
             self.plan_hint_var.set("导入题库并设置题量后自动计算覆盖所需张数")
             return
         try:
-            n = min_round_length(self.bank.questions, bp)
+            n = min_round_length(questions, bp)
         except Exception:
             self.plan_hint_var.set("")
             return
-        stats = bank_stats(self.bank.questions)
+        stats = bank_stats(questions)
         detail = []
         if bp.single > 0:
             detail.append(f"单选 {stats['single']}÷{bp.single}={-(-stats['single'] // bp.single)}张")
@@ -1131,8 +1238,9 @@ class PaperDrillApp(tk.Tk):
             self.paper_tree.delete(*self.paper_tree.get_children())
 
     def _generate_round(self) -> None:
-        if not self.bank or not self.bank.questions:
-            messagebox.showwarning("提示", "请先导入题库。")
+        questions = self.active_questions()
+        if not questions:
+            messagebox.showwarning("提示", "请先导入题库（或题库题目已被全部删减）。")
             return
         from .paper import PaperBlueprint
 
@@ -1149,7 +1257,7 @@ class PaperDrillApp(tk.Tk):
         self.config(cursor="watch")
         self.update_idletasks()
         try:
-            rnd = generate_round(self.bank.questions, bp, round_length=round_length)
+            rnd = generate_round(questions, bp, round_length=round_length)
         except GenerationError as exc:
             self.config(cursor="")
             messagebox.showerror("无法生成试卷", str(exc))
@@ -1543,11 +1651,13 @@ class PaperDrillApp(tk.Tk):
         self._bind_dialog_focus(win)
         ttk.Label(win, text=f"进度目录：{progress_dir()}", padding=(10, 8)).pack(anchor="w")
 
-        cols = ("name", "total", "done", "accuracy", "wrong", "exams", "updated")
+        cols = ("name", "active", "total", "cut", "done", "accuracy", "wrong", "exams", "updated")
         tree = ttk.Treeview(win, columns=cols, show="headings", height=13)
-        for col, title, width in (("name", "题库", 220), ("total", "总题数", 70), ("done", "已练", 60),
-                                  ("accuracy", "正确率", 80), ("wrong", "错题", 60),
-                                  ("exams", "考试次数", 80), ("updated", "最后更新", 150)):
+        for col, title, width in (("name", "题库", 200), ("active", "参与练习", 80),
+                                  ("total", "总题数", 70), ("cut", "已删减", 70),
+                                  ("done", "已练", 60), ("accuracy", "正确率", 80),
+                                  ("wrong", "错题", 60), ("exams", "考试次数", 80),
+                                  ("updated", "最后更新", 150)):
             tree.heading(col, text=title)
             tree.column(col, width=width, anchor="w")
         tree.pack(fill="both", expand=True, padx=10)
@@ -1555,8 +1665,10 @@ class PaperDrillApp(tk.Tk):
         def reload_list() -> None:
             tree.delete(*tree.get_children())
             for row in ProgressStore.list_all():
+                cut = row.get("excluded", 0)
                 tree.insert("", "end", iid=row["key"], values=(
-                    row["name"], row["total"] or "—", row["done"] or "—",
+                    row["name"], row.get("active", row["total"]) or "—", row["total"] or "—",
+                    cut or "—", row["done"] or "—",
                     f"{row['accuracy'] * 100:.1f}%" if row.get("done") else "—",
                     row.get("wrong_book", 0), row.get("exams", 0), row["updated"] or "—"))
 
@@ -1579,8 +1691,382 @@ class PaperDrillApp(tk.Tk):
                 ProgressStore.delete_by_key(key)
             reload_list()
 
-        ttk.Button(btns, text="重置选中题库进度", command=reset_selected).pack(side="left")
+        def cut_selected() -> None:
+            if not self.store or not self.bank:
+                messagebox.showinfo("提示", "请先导入题库，再使用「题库删减」。")
+                return
+            sel = tree.selection()
+            if sel and sel[0] != self.store.progress.bank_key:
+                messagebox.showinfo("提示", "「题库删减」只作用于当前正在练习的题库。\n"
+                                            "请先切换到该题库，再删减其中的题目。")
+                return
+            win.destroy()
+            self._show_question_filter()
+
+        ttk.Button(btns, text="题库删减…", command=cut_selected).pack(side="left")
+        ttk.Button(btns, text="重置选中题库进度", command=reset_selected).pack(side="left", padx=8)
+        ttk.Button(btns, text="选择题库…", command=lambda: (win.destroy(),
+                                                        self._show_bank_picker())).pack(side="left")
         ttk.Button(btns, text="关闭", command=win.destroy).pack(side="right")
+
+    # ================================================================ 题库删减
+    def _show_question_filter(self) -> None:
+        """题库删减：把不想练的题目移出练习与组卷（不改原文件，按题库持久化）。"""
+        if not self.bank or self.store is None:
+            messagebox.showwarning("提示", "请先导入题库。")
+            return
+        questions = self.all_questions()
+        if not questions:
+            messagebox.showwarning("提示", "当前题库没有可用的题目。")
+            return
+
+        win = tk.Toplevel(self)
+        win.title(f"题库删减 —— 「{self.store.progress.bank_name or self.bank_var.get()}」")
+        win.geometry("1060x680")
+        win.transient(self)
+        self._bind_dialog_focus(win)
+
+        ttk.Label(
+            win, padding=(12, 10, 12, 0), foreground="#333",
+            text="被删减的题目**不会**出现在练习、错题本与模拟考试组卷中；题库原文件不会被修改。"
+            .replace("**", "")).pack(anchor="w")
+
+        # ---- 过滤条（题型 + 关键词，两个列表共用） ----
+        bar = ttk.Frame(win, padding=(12, 8))
+        bar.pack(fill="x")
+        ttk.Label(bar, text="题型：").pack(side="left")
+        type_var = tk.StringVar(value="全部")
+        ttk.Combobox(bar, textvariable=type_var, width=8, state="readonly",
+                     values=["全部", "单选题", "多选题", "判断题"]).pack(side="left")
+        ttk.Label(bar, text="　搜索题干：").pack(side="left")
+        kw_var = tk.StringVar(value="")
+        ttk.Entry(bar, textvariable=kw_var, width=34).pack(side="left", padx=(0, 6))
+        ttk.Button(bar, text="清空", width=6,
+                   command=lambda: kw_var.set("")).pack(side="left")
+        count_var = tk.StringVar(value="")
+        ttk.Label(bar, textvariable=count_var, foreground="#046").pack(side="right")
+
+        nb = ttk.Notebook(win)
+        nb.pack(fill="both", expand=True, padx=12)
+        active_tab = ttk.Frame(nb, padding=6)
+        cut_tab = ttk.Frame(nb, padding=6)
+        nb.add(active_tab, text="  参与练习  ")
+        nb.add(cut_tab, text="  已删减  ")
+
+        cols = ("no", "qtype", "stem")
+        active_tree = ttk.Treeview(active_tab, columns=cols, show="headings", selectmode="extended")
+        cut_tree = ttk.Treeview(cut_tab, columns=cols, show="headings", selectmode="extended")
+        for tv in (active_tree, cut_tree):
+            tv.heading("no", text="原序号")
+            tv.heading("qtype", text="题型")
+            tv.heading("stem", text="题干")
+            tv.column("no", width=70, anchor="center", stretch=False)
+            tv.column("qtype", width=70, anchor="center", stretch=False)
+            tv.column("stem", width=820, anchor="w")
+            tv.pack(fill="both", expand=True, side="top")
+        active_tree.pack(side="left", fill="both", expand=True)
+
+        for parent, tv in ((active_tab, active_tree), (cut_tab, cut_tree)):
+            sb = ttk.Scrollbar(parent, orient="vertical", command=tv.yview)
+            tv.configure(yscrollcommand=sb.set)
+            sb.pack(side="right", fill="y")
+
+        # 题干索引：iid = 题目指纹
+        by_fp = {q.fingerprint: q for q in questions}
+        answer_of = {q.fingerprint: (q.answer_display + ("（定）" if q.fixed_order else ""))
+                     for q in questions}
+
+        def _match(q) -> bool:
+            t = type_var.get()
+            if t != "全部" and q.qtype.value != t:
+                return False
+            kw = kw_var.get().strip()
+            if not kw:
+                return True
+            low = kw.lower()
+            return (low in q.stem.lower()
+                    or any(low in o.lower() for o in q.options))
+
+        def reload_lists() -> None:
+            active_tree.delete(*active_tree.get_children())
+            cut_tree.delete(*cut_tree.get_children())
+            cut_now = set(self.store.progress.excluded)
+            n_active = n_cut = 0
+            for idx, q in enumerate(questions, start=1):
+                if not _match(q):
+                    continue
+                stem = q.stem.replace("\n", " ")
+                no = f"{idx}"
+                if q.fingerprint in cut_now:
+                    n_cut += 1
+                    cut_tree.insert("", "end", iid=q.fingerprint,
+                                    values=(no, q.qtype.short, stem))
+                else:
+                    n_active += 1
+                    active_tree.insert("", "end", iid=q.fingerprint,
+                                       values=(no, q.qtype.short, stem))
+            total_cut = len(cut_now)
+            count_var.set(f"参与练习 {len(questions) - total_cut} 题　｜　已删减 {total_cut} 题"
+                          f"　（当前筛选：参与 {n_active} / 已删减 {n_cut}）")
+
+        def _selected(tv) -> list:
+            return [by_fp[fp] for fp in tv.selection() if fp in by_fp]
+
+        def do_cut() -> None:
+            picked = _selected(active_tree)
+            if not picked:
+                messagebox.showinfo("提示", "请先在「参与练习」列表中选择要删减的题目。")
+                return
+            added = self.store.exclude(picked)
+            if added:
+                self._apply_filter_change(note=f"已删减 {added} 道题目")
+            reload_lists()
+
+        def do_restore() -> None:
+            picked = _selected(cut_tree)
+            if not picked:
+                messagebox.showinfo("提示", "请先在「已删减」列表中选择要恢复的题目。")
+                return
+            back = self.store.include(picked)
+            if back:
+                self._apply_filter_change(note=f"已恢复 {back} 道题目")
+            reload_lists()
+
+        def do_restore_all() -> None:
+            if self.store is None or not self.store.progress.excluded:
+                messagebox.showinfo("提示", "当前没有已删减的题目。")
+                return
+            n = len(self.store.progress.excluded)
+            if not messagebox.askyesno("全部恢复", f"确定把全部 {n} 道已删减的题目恢复吗？"):
+                return
+            self.store.clear_excluded()
+            self._apply_filter_change(note=f"已恢复全部 {n} 道题目")
+            reload_lists()
+
+        def pick_answer() -> None:
+            tv = cut_tree if nb.index("current") == 1 else active_tree
+            sel = tv.selection()
+            if not sel or sel[0] not in by_fp:
+                messagebox.showinfo("提示", "请先选择一道题目。")
+                return
+            q = by_fp[sel[0]]
+            lines = [q.stem, ""]
+            for lab, opt in zip("ABCDEFGH", q.options, strict=False):
+                lines.append(f"{lab}. {opt}")
+            if q.qtype is QType.JUDGE:
+                lines.append("（判断题）")
+            lines.append("")
+            lines.append(f"正确答案：{answer_of[q.fingerprint]}")
+            if q.analysis:
+                lines.append(f"解析：{q.analysis}")
+            messagebox.showinfo("题目内容", "\n".join(lines))
+
+        btns = ttk.Frame(win, padding=(12, 8, 12, 12))
+        btns.pack(fill="x")
+        ttk.Button(btns, text="删减选中题目 →",
+                   command=do_cut).pack(side="left")
+        ttk.Button(btns, text="← 恢复选中题目",
+                   command=do_restore).pack(side="left", padx=8)
+        ttk.Button(btns, text="全部恢复",
+                   command=do_restore_all).pack(side="left")
+        ttk.Button(btns, text="查看题目内容",
+                   command=pick_answer).pack(side="left", padx=8)
+        ttk.Button(btns, text="关闭", command=win.destroy).pack(side="right")
+
+        for var in (type_var, kw_var):
+            var.trace_add("write", lambda *_: reload_lists())
+        reload_lists()
+
+    def _apply_filter_change(self, note: str = "") -> None:
+        """删减/恢复后：重建练习队列并刷新统计（尽量停留在原来那道题上）。"""
+        if self.session is None:
+            return
+        current = self.session.current_question()
+        fingerprint = current.fingerprint if current is not None else ""
+        questions = self.active_questions()
+        self.session.questions = questions
+        self.session.rebuild(self.session.mode)
+        if fingerprint and self.session.goto_question_fp(fingerprint):
+            pass
+        else:
+            self.session.cursor = 0
+        self.round = None                     # 旧试卷按旧题目集生成，作废
+        self.exam = None
+        self._clear_paper_tree()
+        self.cover_var.set("尚未生成试卷（题库删减后需重新生成一轮）")
+        self._show_exam_view("setup")
+        self._refresh_plan_hint()
+        if self.session.empty:
+            self._render_empty(self.session.mode,
+                               self._scope_of_qtype(self.session.qtype_filter))
+        else:
+            self.session.save_position()
+            self._render_current()
+        self._refresh_stats()
+        self._refresh_footer()
+        if note:
+            self.set_status(note + "　（题库原文件未改动，可随时恢复）")
+
+    # ================================================================ 题库选择
+    def _show_bank_picker(self) -> None:
+        """题库选择：最近使用的题库列表，一键切换 / 移除 / 扫描文件夹。"""
+        win = tk.Toplevel(self)
+        win.title("选择题库")
+        win.geometry("920x540")
+        win.transient(self)
+        self._bind_dialog_focus(win)
+
+        head = ttk.Frame(win, padding=(12, 10, 12, 4))
+        head.pack(fill="x")
+        ttk.Label(head, text="已记录题库（双击即载入）",
+                  font=("Microsoft YaHei", 10, "bold")).pack(side="left")
+        hint_var = tk.StringVar(value="")
+        ttk.Label(head, textvariable=hint_var, foreground="#046").pack(side="right")
+
+        cols = ("name", "active", "path", "used")
+        wrap = ttk.Frame(win, padding=(12, 0))
+        wrap.pack(fill="both", expand=True)
+        tree = ttk.Treeview(wrap, columns=cols, show="headings", selectmode="browse", height=14)
+        for col, title, width, stretch in (("name", "题库", 240, False),
+                                           ("active", "题数", 70, False),
+                                           ("path", "路径", 400, True),
+                                           ("used", "最后使用", 150, False)):
+            tree.heading(col, text=title)
+            tree.column(col, width=width, anchor="w", stretch=stretch)
+        sb = ttk.Scrollbar(wrap, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=sb.set)
+        tree.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+
+        btns = ttk.Frame(win, padding=(12, 8, 12, 12))
+        btns.pack(fill="x")
+
+        def reload_lists() -> None:
+            tree.delete(*tree.get_children())
+            rows = self.library.entries
+            for i, rec in enumerate(rows):
+                p = Path(rec["path"])
+                exists = p.is_file()
+                tag = "" if exists else "missing"
+                tree.insert("", "end", iid=str(i), tags=(tag,), values=(
+                    rec["name"] + ("" if exists else "　（文件已不存在）"),
+                    rec["total"] or "—", rec["path"], rec["last_used"] or "—"))
+            tree.tag_configure("missing", foreground="#999")
+            hint_var.set(f"共 {len(rows)} 个记录，其中 {len(self.library.missing())} 个文件已不存在")
+
+        def selected_path() -> str:
+            sel = tree.selection()
+            if not sel:
+                return ""
+            try:
+                idx = int(sel[0])
+            except ValueError:
+                return ""
+            entries = self.library.entries
+            return entries[idx]["path"] if 0 <= idx < len(entries) else ""
+
+        def load_selected(event=None) -> None:
+            path = selected_path()
+            if not path:
+                messagebox.showinfo("提示", "请先在列表中选择一个题库。")
+                return
+            if not Path(path).is_file():
+                if not messagebox.askyesno(
+                        "文件不存在",
+                        f"题库文件不存在：\n{path}\n\n"
+                        "可能被移动或重命名。是否从列表中移除这条记录？\n"
+                        "（不会删除磁盘上的任何文件）"):
+                    return
+                self.library.forget(path)
+                reload_lists()
+                return
+            win.destroy()
+            self._import_bank(path)
+
+        def import_file() -> None:
+            path = filedialog.askopenfilename(
+                title="选择题库文件",
+                filetypes=[("题库文件", "*.xlsx *.xlsm *.csv *.txt *.json *.docx *.docm *.pdf"),
+                           ("所有文件", "*.*")])
+            if not path:
+                return
+            win.destroy()
+            self._import_bank(path)
+
+        def scan_folder() -> None:
+            folder = filedialog.askdirectory(title="选择存放题库的文件夹（会递归扫描）")
+            if not folder:
+                return
+            found = scan_bank_folder(folder)
+            if not found:
+                messagebox.showinfo("没有找到题库",
+                                    "该文件夹下没有找到受支持的题库文件。\n\n"
+                                    "支持：" + "、".join(sorted(SUPPORTED_SUFFIXES)))
+                return
+            for path in found:
+                name, total = quick_bank_info(path)
+                self.library.remember(path, name, total)
+            reload_lists()
+            messagebox.showinfo("扫描完成",
+                                f"共发现 {len(found)} 个题库文件，已加入列表（不会自动载入）。")
+
+        def forget_selected() -> None:
+            path = selected_path()
+            if not path:
+                messagebox.showinfo("提示", "请先在列表中选择一个题库。")
+                return
+            if not messagebox.askyesno("移除记录",
+                                       f"从题库列表移除这条记录吗？\n{path}\n\n"
+                                       "注意：只是不再显示在列表里，**不会删除题库文件**。"):
+                return
+            self.library.forget(path)
+            reload_lists()
+
+        def forget_and_reset() -> None:
+            path = selected_path()
+            if not path:
+                messagebox.showinfo("提示", "请先在列表中选择一个题库。")
+                return
+            if not messagebox.askyesno("移除记录并清空进度",
+                                       f"移除记录，并删除「{Path(path).stem}」保存的练习进度吗？\n"
+                                       "（练习记录、错题本与历史成绩都会清空，不可撤销；"
+                                       "题库文件不会被删除）"):
+                return
+            # 用真实的题库标识定位进度文件：载入一次拿题目指纹，不靠文件名猜
+            hit_key = ""
+            try:
+                loaded = load_bank(path)
+                if loaded.questions:
+                    hit_key = bank_key_of(Path(path).stem, loaded.questions)
+            except Exception:
+                hit_key = ""
+            done = 0
+            if hit_key:
+                if self.store and self.store.progress.bank_key == hit_key:
+                    self.store.delete()
+                    done = 1
+                elif ProgressStore.delete_by_key(hit_key):
+                    done = 1
+            self.library.forget(path)
+            reload_lists()
+            if hit_key:
+                messagebox.showinfo("完成", f"已移除记录，并清理 {done} 份该题库的进度文件。")
+            else:
+                messagebox.showinfo("完成",
+                                    "已移除记录。\n"
+                                    "（未能解析该题库文件，未清理进度；可在「进度管理」中手动删除）")
+
+        tree.bind("<Double-1>", load_selected)
+        tree.bind("<Return>", load_selected)
+
+        ttk.Button(btns, text="载入选中题库", command=load_selected).pack(side="left")
+        ttk.Button(btns, text="导入题库文件…", command=import_file).pack(side="left", padx=8)
+        ttk.Button(btns, text="扫描文件夹…", command=scan_folder).pack(side="left")
+        ttk.Button(btns, text="移除记录", command=forget_selected).pack(side="left", padx=8)
+        ttk.Button(btns, text="移除记录并清空进度",
+                   command=forget_and_reset).pack(side="left")
+        ttk.Button(btns, text="关闭", command=win.destroy).pack(side="right")
+        reload_lists()
 
     # ================================================================ 设置/杂项
     def _save_settings(self) -> None:
@@ -1703,6 +2189,7 @@ def selftest(bank_path: str, result_path: str = "", progress_root: str = "",
 
     result: dict = {"ok": False, "stage": "init"}
     app: "PaperDrillApp | None" = None
+    extra_apps: list = []
     try:
         app = PaperDrillApp(None, settings=_fresh_settings(), settings_path=settings_file)
         app.withdraw()
@@ -1900,18 +2387,110 @@ def selftest(bank_path: str, result_path: str = "", progress_root: str = "",
         app2._set_mode(PracticeMode.FRESH)
         result["fresh_mode_total"] = app2.session.total
 
-        # ---- 7) 清空错题 + 重置
-        cleared = app2.store.progress.clear_wrong_book(app2.session.questions)
-        app2.store.save()
-        result["wrong_cleared"] = cleared
-        app2.store.reset()
-        result["stats_after_reset"] = app2.session.stats()
+        # ---- 7) 随机练习模式重开：必须仍停在关闭前那道题（v1.2.4 修复）
+        rand: dict = {}
+        app2._set_mode(PracticeMode.RANDOM)
+        app2.update()
+        item_before = app2.session.current_item()
+        rand["mode"] = app2.session.mode.value
+        rand["fp_before"] = item_before.question.fingerprint if item_before else ""
+        rand["pos_before"] = app2.session.position
+        rand["total"] = app2.session.total
+        rand["excluded_before"] = len(app2.store.progress.excluded)
+        app2.session.save_position()
         app2._on_close()
         app2 = None
+        app3 = PaperDrillApp(None, settings=_fresh_settings(), settings_path=settings_file)
+        app3.withdraw()
+        app3.update()
+        app3._import_bank(str(bank_path))
+        item_after = app3.session.current_item()
+        rand["mode_kept"] = bool(app3.session.mode is PracticeMode.RANDOM)
+        rand["fp_after"] = item_after.question.fingerprint if item_after else ""
+        rand["resume_same_question"] = bool(rand["fp_before"] and rand["fp_before"] == rand["fp_after"])
+        result["random_resume"] = rand
+
+        # ---- 8) 题库删减：删减后不再参与练习/组卷，重开后仍然生效
+        cut: dict = {}
+        active_before = len(app3.session.questions)
+        all_qs = app3.all_questions()
+        # 删减前 1/4 的题，**但避开当前所在题**，以便同时验证"删减后仍能延续进度"
+        cur_fp = rand["fp_before"]
+        targets = [q for q in all_qs if q.fingerprint != cur_fp][: max(1, active_before // 4)]
+        pick = len(targets)
+        cut["all"] = len(all_qs)
+        cut["active_before"] = active_before
+        cut["removed"] = app3.store.exclude(targets)
+        app3._apply_filter_change(note="selftest")
+        app3.update()
+        cut["active_after"] = len(app3.session.questions)
+        cut["counts_match"] = (cut["active_after"] == active_before - pick)
+        cut["excluded_visible"] = (len(app3.store.excluded_questions(all_qs)) == pick)
+        cut["excluded_not_in_session"] = not ({q.fingerprint for q in targets}
+                                              & {q.fingerprint for q in app3.session.questions})
+        app3._generate_round()
+        paper_ok = True
+        if app3.round is not None:
+            cut_fps = {q.fingerprint for q in targets}
+            for paper in app3.round.papers:
+                for pi in paper.items:
+                    if pi.question.fingerprint in cut_fps:
+                        paper_ok = False
+        cut["paper_excludes_cut"] = paper_ok
+        app3._on_close()
+        app3 = None
+        app3b = PaperDrillApp(None, settings=_fresh_settings(), settings_path=settings_file)
+        app3b.withdraw()
+        app3b.update()
+        app3b._import_bank(str(bank_path))
+        cut["persisted_after_restart"] = (len(app3b.store.progress.excluded) == pick)
+        cut["active_after_restart"] = len(app3b.session.questions)
+        current_after = app3b.session.current_question()
+        cut["restart_positions_valid_question"] = (current_after is not None
+                                                   and not app3b.store.is_excluded(current_after))
+        # 删减后重开：仍按指纹停回关闭前那道题（该题未被删减）
+        cut["resume_ok_after_cut"] = bool(
+            current_after is not None and current_after.fingerprint == rand["fp_before"])
+        # 恢复
+        back = app3b.store.include(targets)
+        app3b._apply_filter_change(note="selftest")
+        app3b.update()
+        cut["restored_count"] = back
+        cut["active_after_restore"] = len(app3b.session.questions)
+        cut["restore_ok"] = (cut["active_after_restore"] == cut["all"])
+        result["bank_cut"] = cut
+
+        # ---- 9) 题库选择：题库库记录 / 去重 / 移除（不删文件）
+        lib: dict = {}
+        lib["count_before"] = len(app3b.library)
+        app3b.library.remember(str(bank_path), "重复记录", 0)
+        lib["dedupe_ok"] = (len(app3b.library) == lib["count_before"])
+        app3b.library.save()
+        reloaded = BankLibrary.load()
+        lib["persisted"] = (len(reloaded) == lib["count_before"])
+        lib["missing_detected"] = len(reloaded.missing()) >= 0
+        bank_file = Path(bank_path)
+        removed = app3b.library.forget(str(bank_path))
+        lib["forget_ok"] = bool(removed) and reloaded.get(str(bank_path)) is not None
+        lib["file_survives_forget"] = bank_file.is_file()
+        lib["count_after_forget"] = len(app3b.library)
+        result["bank_library"] = lib
+
+        # ---- 10) 清空错题 + 重置
+        cleared = app3b.store.progress.clear_wrong_book(app3b.session.questions)
+        app3b.store.save()
+        result["wrong_cleared"] = cleared
+        app3b.store.reset()
+        result["stats_after_reset"] = app3b.session.stats()
+        app3b._on_close()
+        app3b = None
 
         plan = result["exam_planned"]
         keyboard = result.get("keyboard", {})
         redo = result.get("redo", {})
+        rand = result.get("random_resume", {})
+        cut = result.get("bank_cut", {})
+        lib = result.get("bank_library", {})
         result["ok"] = bool(
             result["progress_saved"] and result["progress_restored"]
             and result["paper"]["coverage_ok"]
@@ -1927,6 +2506,14 @@ def selftest(bank_path: str, result_path: str = "", progress_root: str = "",
             and keyboard.get("exam_enter_advances") and keyboard.get("input_guard")
             and redo.get("restart_options_enabled") and redo.get("restart_reanswerable")
             and redo.get("wrong_mode_answerable")
+            # v1.2.4 新增
+            and rand.get("resume_same_question") and rand.get("mode_kept")
+            and cut.get("counts_match") and cut.get("excluded_visible")
+            and cut.get("excluded_not_in_session") and cut.get("paper_excludes_cut")
+            and cut.get("persisted_after_restart") and cut.get("restore_ok")
+            and cut.get("resume_ok_after_cut") and cut.get("restart_positions_valid_question")
+            and lib.get("dedupe_ok") and lib.get("persisted")
+            and lib.get("file_survives_forget")
             and result["stats_after_reset"]["done"] == 0)
         result["stage"] = "done"
     except Exception as exc:
@@ -1941,6 +2528,12 @@ def selftest(bank_path: str, result_path: str = "", progress_root: str = "",
                 app.destroy()
         except Exception:
             pass
+        for _a in extra_apps:
+            try:
+                if _a is not None:
+                    _a.destroy()
+            except Exception:
+                pass
         payload = json.dumps(result, ensure_ascii=False, indent=2)
         if result_path:
             try:
@@ -1954,6 +2547,9 @@ def selftest(bank_path: str, result_path: str = "", progress_root: str = "",
                    "exam": result.get("exam"), "keyboard": result.get("keyboard"),
                    "redo": result.get("redo"),
                    "progress_restored": result.get("progress_restored"),
+                   "random_resume": result.get("random_resume"),
+                   "bank_cut": result.get("bank_cut"),
+                   "bank_library": result.get("bank_library"),
                    "error": result.get("error", "")}
         try:
             print("[gui-selftest] " + json.dumps(summary, ensure_ascii=False))

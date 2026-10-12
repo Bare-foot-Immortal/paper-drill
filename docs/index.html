@@ -50,11 +50,11 @@
 <div class="wrap">
   <header>
     <h1>刷题匠 PaperDrill</h1>
-    <div class="tag">题库刷题练习 + 模拟考试桌面工具 ｜ 版本 v1.2.1 ｜ Windows 单文件程序，免安装、免联网</div>
+    <div class="tag">题库刷题练习 + 模拟考试桌面工具 ｜ 版本 v1.2.4 ｜ Windows 单文件程序，免安装、免联网</div>
     <div>
       <span class="badge">AI 开发（DeepSeek）</span>
       <span class="badge">MIT License</span>
-      <span class="badge">自动化测试 152 项（pytest）</span>
+      <span class="badge">自动化测试 192 项通过 / 1 跳过</span>
       <span class="badge">Windows 10/11 x64</span>
     </div>
   </header>
@@ -72,7 +72,7 @@
   </div>
 
   <h2>这是什么</h2>
-  <p>导入 Excel / Word / PDF 题库，实时判题、错题本、按题型练习、自定义蓝图生成试卷做真实模拟考试，进度自动保留。</p>
+  <p>导入 Excel / Word / PDF 题库，实时判题、错题本、按题型练习、自定义蓝图生成试卷做真实模拟考试，进度自动保留；可按题库删减不想练的题目，并在最近使用的题库之间快速切换。</p>
 
   <h2>功能一览</h2>
   <div class="grid">
@@ -82,7 +82,10 @@
     <div class="card"><h3>练习模式</h3><p>顺序 / 随机 / 错题重练 / 只练未做，可叠加按题型练习</p></div>
     <div class="card"><h3>自定义组卷</h3><p>题量与题型占比任意配置，一轮覆盖全部题目，末卷自动补题</p></div>
     <div class="card"><h3>真实模拟考试</h3><p>作答期不提示对错，交卷一次性评分：总分、正确率、各题型明细、逐题明细</p></div>
-    <div class="card"><h3>进度自动保留</h3><p>题目指纹定位，题库增删或改名自动继承进度</p></div>
+    <div class="card"><h3>进度自动保留</h3><p>题目指纹定位，题库增删或改名自动继承进度；关闭再打开仍停在上次那道题，随机 / 只练未做模式同样按指纹续做</p></div>
+    <div class="card"><h3>指纹续做（v1.2.4）</h3><p>关闭前保存「当前题 + 后续最多 3 题」的指纹窗口，重开时在当前队列中按指纹定位；全部未命中才退回原下标，不再谎报「已恢复进度」</p></div>
+    <div class="card"><h3>题库删减（v1.2.4）</h3><p>练习 → 题库删减…：排除不想练的题目（题型 + 关键词筛选，可随时恢复），不改动题库文件；删减后不参与练习、错题本、统计与组卷</p></div>
+    <div class="card"><h3>题库选择（v1.2.4）</h3><p>文件 → 选择题库…（Ctrl+B）：记录最近使用的题库，可导入题库文件、扫描文件夹、移除记录；文件已缺失的记录置灰，移除记录不会删除题库文件</p></div>
     <div class="card"><h3>快捷键</h3><p>1~8 选答案、Enter 下一题、← → 翻题、F9 交卷</p></div>
   </div>
 
@@ -123,7 +126,7 @@ powershell -ExecutionPolicy Bypass -File build_exe.ps1</pre>
 python tools/make_samples.py
 pytest -q                 # 自动化测试
 ruff check src tools tests  # 代码检查</pre>
-  <p class="tag">CI（GitHub Actions）在每次推送时执行上述步骤，并自动打包 Windows 单文件 exe。</p>
+  <p class="tag">当前状态：<code>192 passed, 1 skipped</code>，<code>ruff check</code> 零告警。CI（GitHub Actions）在每次推送时执行上述步骤，并自动打包 Windows 单文件 exe。</p>
 
   <h2>文档</h2>
   <ul>
@@ -133,6 +136,7 @@ ruff check src tools tests  # 代码检查</pre>
     <li><a href="https://github.com/Bare-foot-Immortal/paper-drill/blob/main/docs/04-快捷键缺陷分析与修复.md">缺陷分析：Enter 快捷键失效</a></li>
     <li><a href="https://github.com/Bare-foot-Immortal/paper-drill/blob/main/docs/05-重做已作答题目缺陷分析与修复.md">缺陷分析：重做已作答题目被锁定</a></li>
     <li><a href="https://github.com/Bare-foot-Immortal/paper-drill/blob/main/docs/06-Word与PDF题库导入说明.md">Word / PDF 题库导入说明</a></li>
+    <li><a href="https://github.com/Bare-foot-Immortal/paper-drill/blob/main/docs/07-进度延续与题库删减选择.md">进度延续与题库删减选择</a></li>
   </ul>
 
   <footer>
