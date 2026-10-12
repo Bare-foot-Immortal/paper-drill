@@ -233,5 +233,95 @@ class TestOtherFormats(LayoutCase):
         self.assertEqual(len(res.issues), 0)
 
 
+# ================================================================ 单列「试题选项」版式
+# 真实题库导出常见版式：序号 | 题型 | 试题正文 | 试题选项 | 试题答案，
+# 选项挤在一列、以 `;`（或模板导出的 `$;$`）分隔，选项字母可写可不写。
+ZQ_HEADER = ["序号", "题型", "试题正文", "试题选项", "试题答案"]
+ZQ_DATA = [
+    [1, "单选题", "砌筑砂浆的抗冻性为：夏热冬冷地区，抗冻指标(____)。",
+     "A、F15;B、F25;C、F35;D、F50", "B"],
+    [2, "单选题", "钢结构的连接方法不包括(____)。",
+     "A绑扎连接;B焊接;C螺栓连接;D铆钉连接", "A"],
+    [55, "多选题", "斜槎水平投影长度不应小于高度的(____)，长高比不应小于(____)。",
+     "A 2/3;B 3/4;C 1/2;D 1/3", "AC"],
+    [56, "多选题", "高处作业防护用品应包括(____)。",
+     "A安全带;B自锁器;C速差自控器;D水平安全绳;E通讯措施", "ABCDE"],
+    [69, "判断题", "将垂直接地体深埋到高电阻率的土壤中，可以降低防雷接地电阻。", "正确;错误", "B"],
+    [70, "判断题", "变电站室内给水系统在交付使用前必须进行通水试验并做好记录。", "A正确;B错误", "A"],
+    [83, "单选题", "把保护(____)摆在首位。",
+     "国家财产安全;人民生命安全;企业财产安全;公共设施安全", "B"],
+    [149, "多选题", "由(____)、(____)审核后，(____)签发。",
+     "班组安全员;班组技术员;项目总工;业主项目经理", "ABC"],
+]
+
+
+class TestSingleColumnOptionLayout(LayoutCase):
+    """「试题正文 / 试题选项 / 试题答案」单列选项版式。"""
+
+    def test_full_layout(self):
+        res = self.assert_ok(self.xlsx("zq", [ZQ_HEADER] + ZQ_DATA), count=8, header_row=1)
+        qs = res.questions
+        self.assertEqual(qs[0].options, ["F15", "F25", "F35", "F50"])
+        self.assertEqual(qs[0].answer_letters, ["B"])
+        self.assertEqual(qs[1].options, ["绑扎连接", "焊接", "螺栓连接", "铆钉连接"])
+        self.assertEqual(qs[2].options, ["2/3", "3/4", "1/2", "1/3"])
+        self.assertEqual(qs[3].options, ["安全带", "自锁器", "速差自控器", "水平安全绳", "通讯措施"])
+        self.assertEqual(qs[4].options, [], "判断题不设选项")
+        self.assertFalse(qs[4].judge_answer)
+        self.assertTrue(qs[5].judge_answer)
+        self.assertEqual(qs[6].options,
+                         ["国家财产安全", "人民生命安全", "企业财产安全", "公共设施安全"])
+        self.assertEqual(qs[7].answer_letters, ["A", "B", "C"])
+
+    def test_judge_answer_follows_option_text(self):
+        """判断题选项顺序写成「错误;正确」时，字母答案必须按选项文本还原。"""
+        rows = [ZQ_HEADER,
+                [1, "判断题", "题目一。", "错误;正确", "B"],
+                [2, "判断题", "题目二。", "A错误;B正确", "A"]]
+        res = self.assert_ok(self.xlsx("zqjudge", rows), count=2, kinds="judge")
+        self.assertTrue(res.questions[0].judge_answer, "选项 B=正确 应判为正确")
+        self.assertFalse(res.questions[1].judge_answer, "选项 A=错误 应判为错误")
+
+    def test_dollar_separator_and_missing_label(self):
+        """模板导出的 `$;$` 分隔符，以及源文件漏写选项字母（A.…;持续淋水1h;C.…）。"""
+        rows = [ZQ_HEADER,
+                [1, "单选题", "题目一(____)。", "F15$;$F25$;$F35$;$F50", "C"],
+                [2, "多选题", "题目二(____)。",
+                 "A.雨后$;$持续淋水1h$;$C.持续淋水2h$;$D.持续淋水4h", "AC"]]
+        res = self.assert_ok(self.xlsx("zqdollar", rows), count=2, header_row=1,
+                             kinds="multiple,single")
+        self.assertEqual(res.questions[0].options, ["F15", "F25", "F35", "F50"])
+        self.assertEqual(res.questions[1].options,
+                         ["雨后", "持续淋水1h", "持续淋水2h", "持续淋水4h"])
+        self.assertEqual(res.questions[1].answer_letters, ["A", "C"])
+
+    def test_option_text_starting_with_letter_is_not_a_label(self):
+        """`A票由…` 这类正文开头的字母不能被当成选项字母（否则选项会被吞掉）。"""
+        rows = [ZQ_HEADER,
+                [1, "单选题", "关于A票与B票的说法错误的是(____)。",
+                 "A票由班组安全员签发$;$B票由项目经理签发$;$涉及二级风险的B票需报业主审核"
+                 "$;$A票仅需班组长签字", "D"]]
+        res = self.assert_ok(self.xlsx("zqtext", rows), count=1, kinds="single")
+        self.assertEqual(res.questions[0].options[0], "A票由班组安全员签发")
+        self.assertEqual(res.questions[0].answer_letters, ["D"])
+
+    def test_csv_same_layout(self):
+        """同一张表另存为 CSV：单元格里的 `;` 不能被当成列分隔符。"""
+        res = self.load(self.csv("zq", [ZQ_HEADER] + ZQ_DATA))
+        self.assertEqual(len(res.issues), 0, f"不应有坏行：{res.issues[:2]}")
+        self.assertEqual(len(res.questions), 8)
+        self.assertEqual(res.questions[0].options, ["F15", "F25", "F35", "F50"])
+
+    def test_real_example_workbook(self):
+        """工作区里的真实样表（存在时）：每题都要收录，空位占位符原样保留。"""
+        bank = ROOT.parent / "例" / "例.xlsx"
+        if not bank.exists():
+            self.skipTest(f"未找到真实样表：{bank}")
+        res = self.load(bank)
+        self.assertEqual(len(res.issues), 0, f"不应有坏行：{res.issues[:2]}")
+        self.assertEqual(len(res.questions), 9)
+        self.assertIn("(____)", res.questions[0].stem)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

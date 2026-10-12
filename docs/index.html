@@ -91,6 +91,9 @@
     <tr><th>格式</th><th>说明</th></tr>
     <tr><td>Excel / CSV / TXT</td><td>列头 <code>题型 | 题目标题 | 选项A…选项H | 解析 | 答案</code>；
         列名可用同义词、列顺序不限、首行可以是标题、列头可写在前 20 行内</td></tr>
+    <tr><td>Excel（单列选项版式）</td><td>题库模板导出常见：
+        <code>序号 | 题型 | 试题正文 | 试题选项 | 试题答案</code>，选项写在一列里以 <code>;</code> 分隔，
+        字母可写可不写（<code>A、F15;B、F25</code>、<code>A绑扎连接;B焊接</code>、<code>正确;错误</code>）</td></tr>
     <tr><td>Word（.docx）</td><td><b>表格型</b>（列头同上）或<b>段落文本型</b>（题干、选项、答案分行；
         答案可写在题干括号里，如 <code>（C）</code>、<code>（  BCE ）</code>、<code>（√）</code>）</td></tr>
     <tr><td>PDF</td><td>读取文本层（扫描件不支持）：先按段落解析，再用「多空格分列」兜底</td></tr>

@@ -16,7 +16,7 @@ import csv
 import io
 import json
 import re
-from collections import deque
+from collections import Counter, deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Sequence
@@ -48,11 +48,12 @@ _HEADER_SYNONYMS: dict[str, list[str]] = {
     "type": ["题型", "题目类型", "类型", "试题类型", "分类", "题目种类", "试题分类",
              "type", "kind", "category"],
     "stem": ["题目标题", "题目", "题干", "试题", "问题", "题目内容", "试题内容", "试题题目",
-             "题干内容", "题干题目", "题目描述", "题目正文", "试题题干",
+             "题干内容", "题干题目", "题目描述", "题目正文", "试题正文", "试题题干",
              "stem", "question", "title", "questiontext", "description"],
     "analysis": ["解析", "答案解析", "试题解析", "题目解析", "说明", "分析", "参考答案解析",
                  "备注", "依据", "来源", "知识点", "analysis", "explain", "explanation"],
     "answer": ["答案", "正确答案", "参考答案", "标准答案", "正确选项", "答案选项",
+               "试题答案", "题目答案",
                "answer", "key", "correctanswer"],
 }
 _OPTION_HEADER_RE = re.compile(r"^(?:选项)?\s*([A-Ha-h])\s*(?:选项)?$")
@@ -126,11 +127,30 @@ def _decode(data: bytes) -> str:
     return data.decode("utf-8", errors="replace")  # pragma: no cover
 
 
+_DELIM_CANDIDATES = ("\t", "|", ";", ",", "，")
+
+
 def _sniff_delimiter(text: str) -> str:
-    head = "\n".join(text.splitlines()[:5])
-    for delim in ("\t", "|", ";", ",", "，"):
-        if head.count(delim) >= 1:
-            return "," if delim == "，" else delim
+    """猜测列分隔符。
+
+    题库单元格里经常出现 ``;``（单列多选项，如 ``A.甲;B.乙``），所以不能
+    「谁先出现就用谁」——那样会把 ``;`` 当成列分隔符，整张表错列。
+    这里改为：候选分隔符中取**各行列数最一致**的一个，一致程度相同时取列数更多者。
+    """
+    lines = [ln for ln in text.splitlines()[:50] if ln.strip()]
+    best_delim, best_score = "", (0, 0)
+    for delim in _DELIM_CANDIDATES:
+        counts = [ln.count(delim) for ln in lines]
+        if not any(counts):
+            continue
+        modal_count, agree = Counter(counts).most_common(1)[0]
+        if modal_count == 0:            # 该分隔符只出现在少数行 → 多半是单元格内容
+            continue
+        score = (agree, modal_count)
+        if score > best_score:
+            best_delim, best_score = delim, score
+    if best_delim:
+        return best_delim
     try:
         return csv.Sniffer().sniff(text[:4096]).delimiter
     except Exception:
@@ -287,7 +307,23 @@ def _positional_map(width: int) -> "dict[str, object] | None":
     return None
 
 
+# 表格单元格里的手动折行：汉字（含中文标点）之间直接相接，其它情况补一个空格。
+# 段落型题库的换行才有结构含义，表格里出现的换行只是整理时的折行。
+_CJK_WRAP_RE = re.compile(
+    r"(?<=[\u3000-\u303f\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff])[ \t]*\n[ \t]*"
+    r"(?=[\u3000-\u303f\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff])"
+)
+
+
+def _unwrap_cell(text: str) -> str:
+    """把单元格内的手动折行拼回一行：汉字之间直接相接，其它情况补一个空格。"""
+    if "\n" not in text:
+        return text
+    return re.sub(r"[ \t]*\n[ \t]*", " ", _CJK_WRAP_RE.sub("", text))
+
+
 def _cell(row: Sequence[str], idx: object) -> str:
+    """取表格单元格文本（顺带把手动折行拼回一行）。"""
     if idx is None:
         return ""
     try:
@@ -296,7 +332,7 @@ def _cell(row: Sequence[str], idx: object) -> str:
         return ""
     if i < 0 or i >= len(row):
         return ""
-    return normalize_text(row[i])
+    return normalize_text(_unwrap_cell(normalize_text(row[i])))
 
 
 # ---------------------------------------------------------------- 主流程
@@ -398,6 +434,10 @@ def rows_to_questions(rows: list[list[str]], *, start_row: int = 1
         if not raw_answer and qtype is QType.JUDGE:
             issues.append(BankIssue(row_no, "缺少答案", raw_preview))
             continue
+        if qtype is QType.JUDGE:
+            # 判断题选项常写成「A正确;B错误」/「正确;错误」：先按选项文本还原答案，
+            # 再把选项去掉（与段落解析、模板一致：判断题不设选项）。
+            raw_answer = _resolve_judge_answer(raw_answer, options)
         try:
             letters, judge, fixed = parse_answer(qtype, raw_answer, max(len(options), 1))
         except AnswerParseError as exc:
@@ -409,7 +449,7 @@ def rows_to_questions(rows: list[list[str]], *, start_row: int = 1
             qid=f"{qtype.key}-{running:04d}",
             qtype=qtype,
             stem=stem,
-            options=options,
+            options=[] if qtype is QType.JUDGE else options,
             answer_letters=letters,
             judge_answer=judge,
             fixed_order=fixed,
@@ -531,6 +571,24 @@ def _options_look_like_judge(options: dict[str, str]) -> bool:
     return all(any(w in t for w in _JUDGE_OPTION_WORDS) for t in texts)
 
 
+def _resolve_judge_answer(raw_answer: str, options: Sequence[str]) -> str:
+    """判断题答案写成选项字母时，按**选项文本**还原成「正确 / 错误」。
+
+    题库里判断题的选项常写成 ``A正确;B错误`` 或 ``正确;错误``；若顺序被写成
+    ``错误;正确``，直接把字母按「A=正确」硬解会得到相反的结论，因此这里先用
+    选项文本把字母翻译回文字答案（无法翻译时原样返回，交给 ``parse_answer``）。
+    """
+    token = normalize_text(raw_answer)
+    texts = [normalize_text(t) for t in options if normalize_text(t)]
+    if len(texts) != 2 or not all(any(w in t for w in _JUDGE_OPTION_WORDS) for t in texts):
+        return token
+    letters = _letters_from_token(token)
+    if len(letters) != 1:
+        return token
+    idx = OPTION_LABELS.index(letters[0])
+    return texts[idx] if idx < len(texts) else token
+
+
 def _extract_embedded_answer(stem: str) -> tuple["str | None", str]:
     """从题干括号里提取答案，并把答案抹成作答空位。
 
@@ -628,6 +686,78 @@ def _split_options(text: str) -> tuple[list[tuple[str, str]], "str | None"]:
         segs[-1] = (letter, last[: glue.start()].strip())
         leftover = f"{_digits(glue.group(1))}、{glue.group(2)}"
     return [(lab, txt) for lab, txt in segs if txt], leftover
+
+
+# 单列「选项」单元格里的显式分隔符：`;`/`；`/`|`/换行，
+# 以及题库模板导出常见的 `$;$`（先匹配，避免 `$` 参与后续切分）。
+_OPT_CELL_SEP_RE = re.compile(r"\$;\$|[;；|｜\n\r]+")
+# 强字母标记：字母后有分隔符或空格（`A、F15` / `A.甲` / `A 2/3` / `A)甲`），基本不会误判。
+_OPT_LABEL_STRONG_RE = re.compile(rf"^([{_LETTER_CLS}])(?:[.．、,，:：)）]\s*|\s+)")
+# 弱字母标记：字母后直接接非拉丁字符（`A绑扎连接` / `A正确`）。
+# 这类写法有歧义（`A票由…` 里的 A 属于正文），只在整列字母自洽时才采信。
+_OPT_LABEL_WEAK_RE = re.compile(rf"^([{_LETTER_CLS}])(?=[^\sA-Za-z0-9])")
+
+
+def _split_option_cell(cell: str) -> list[tuple[str, str]]:
+    """把「选项写在一列」的单元格切成 ``[(字母, 选项文本)]``。
+
+    比 :func:`_split_options` 多支持两类真实题库写法：
+
+    * **显式分隔符**：``A、F15;B、F25``（``;``/``；``/``|``/换行，以及模板导出的 ``$;$``）
+    * **完全不带字母**：``正确;错误`` / ``甲;乙;丙;丁`` —— 按出现顺序补 A、B、C…
+
+    归位规则（按优先级）：
+
+    1. 每个片段都带字母、且字母严格递增 ⇒ 整列按字母归位（``A绑扎连接;B焊接``）；
+    2. 有 ≥2 个「字母 + 分隔符/空格」的强标记 ⇒ 强标记按字母归位，其余片段按顺序补字母
+       （源文件漏写字母如 ``A.雨后;持续淋水1h;C.…`` 时也能还原出 B）；
+    3. 其余情况 ⇒ 整列按顺序编号，片段正文原样保留（``A票由…`` 里的 A 属于正文）。
+
+    没有显式分隔符时回退到 :func:`_split_options`，继续支持 ``A.甲 B.乙`` 这类写法。
+    """
+    text = normalize_text(cell)
+    if not text:
+        return []
+    parts = [p for p in (s.strip() for s in _OPT_CELL_SEP_RE.split(text)) if p]
+    if len(parts) < 2:
+        return _split_options(text)[0]
+
+    parsed: list[tuple[str, str, str, str]] = []      # (强字母, 弱字母, 强字母后的正文, 原片段)
+    for part in parts:
+        m = _OPT_LABEL_STRONG_RE.match(part)
+        if m:
+            parsed.append((_letter(m.group(1)), "", part[m.end():].strip(), part))
+            continue
+        m = _OPT_LABEL_WEAK_RE.match(part)
+        if m:
+            parsed.append(("", _letter(m.group(1)), part[m.end():].strip(), part))
+            continue
+        parsed.append(("", "", "", part))
+
+    labelled = [strong or weak for strong, weak, _rest, _full in parsed]
+    # ① 全部片段都带字母、且字母严格递增 ⇒ 按字母归位
+    if all(labelled) and all(labelled[i] < labelled[i + 1] for i in range(len(labelled) - 1)):
+        return [(strong or weak, rest) for strong, weak, rest, _full in parsed if rest]
+
+    # ② 至少 2 个强标记 ⇒ 强标记按字母归位，其余片段补下一个未用字母
+    if sum(1 for strong, _w, _r, _f in parsed if strong) >= 2:
+        used = {strong for strong, _w, _r, _f in parsed if strong}
+        cursor = 0
+        out: list[tuple[str, str]] = []
+        for strong, _weak, rest, full in parsed:
+            if strong:
+                out.append((strong, rest))
+                continue
+            while cursor < len(OPTION_LABELS) and OPTION_LABELS[cursor] in used:
+                cursor += 1
+            label = OPTION_LABELS[cursor] if cursor < len(OPTION_LABELS) else ""
+            used.add(label)
+            out.append((label, full))
+        return [(label, txt) for label, txt in out if label and txt]
+
+    # ③ 整列没有可信字母 ⇒ 按顺序编号，正文原样保留
+    return [(OPTION_LABELS[i] if i < len(OPTION_LABELS) else "", full)
+            for i, (_strong, _weak, _rest, full) in enumerate(parsed) if full]
 
 
 def _decide_qtype(section: "QType | str | None", answer_token: str,
@@ -903,6 +1033,7 @@ def _pdf_lines_to_rows(lines: Sequence[TextLine]) -> list[list[str]]:
 
 
 _COMBINED_OPTION_HEADERS = {"选项", "选项内容", "备选项", "答案选项", "可选项", "选项列表",
+                            "试题选项", "题目选项", "试题选项内容",
                             "options", "option", "选项（一行）"}
 
 
@@ -938,8 +1069,7 @@ def _expand_combined_options(rows: list[list[str]]) -> list[list[str]]:
     out.append(list(header[:combo]) + [f"选项{x}" for x in letters] + list(header[combo + 1:]))
     for row in rows[header_idx + 1:]:
         cell = row[combo] if combo < len(row) else ""
-        segs, _leftover = _split_options(normalize_text(cell))
-        opts = dict(segs)
+        opts = dict(_split_option_cell(cell))
         out.append(list(row[:combo]) + [opts.get(x, "") for x in letters] + list(row[combo + 1:]))
     return out
 
