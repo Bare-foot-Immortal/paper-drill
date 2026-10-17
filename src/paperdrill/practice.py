@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import random
+import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Iterable, Sequence
@@ -360,14 +361,63 @@ class PracticeSession:
             out.append(self.questions[self.order[pos]])
         return out
 
+    def position_key(self, mode: "PracticeMode | None" = None,
+                     qtype_filter: "QType | None | str" = "keep") -> str:
+        """当前位置所属的**（模式, 范围）组合键**，例如 ``"order:single"``。
+
+        ``mode`` 默认取会话当前模式；``qtype_filter`` 传 ``"keep"`` 时取会话当前范围，
+        传 ``None`` 表示整个题库（键后缀为 ``all``）。切换模式/范围时据此分别记忆位置，
+        切走再切回来便能延续各自的进度。
+        """
+        m = self.mode if mode is None else mode
+        if qtype_filter == "keep":
+            qt = self.qtype_filter
+        else:
+            qt = qtype_filter
+        return f"{m.value}:{(qt.key if qt else 'all')}"
+
     def save_position(self, extra: "dict | None" = None) -> None:
-        self.store.save_session(self.mode.value, self.current_question(), self.cursor,
+        """保存当前位置：既写顶层旧格式字段，也写入**组合键位置表**。
+
+        位置表保存在 ``store.saved_session()["positions"]`` 中，按
+        :meth:`position_key` 区分（模式, 范围）；切换模式/范围时互不覆盖。
+        """
+        try:
+            saved = self.store.saved_session()
+        except Exception:                                  # 进度读取异常不得打断答题
+            saved = {}
+        raw = saved.get("positions") if isinstance(saved, dict) else None
+        positions: dict = {}
+        if isinstance(raw, dict):
+            positions = {str(k): dict(v) for k, v in raw.items()
+                         if isinstance(k, str) and isinstance(v, dict)}
+        window = self.navigation_window()
+        fps = [q.fingerprint for q in window]
+        current = self.current_question()
+        positions[self.position_key()] = {
+            "last_fp": current.fingerprint if current is not None else (fps[0] if fps else ""),
+            "pos_fps": fps,
+            "pos": int(self.cursor),
+            "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        self.store.save_session(self.mode.value, current, self.cursor,
                                 self.shuffle_single and self.shuffle_multiple,
-                                window=self.navigation_window(),
+                                window=window,
                                 extra={"shuffle_single": self.shuffle_single,
                                        "shuffle_multiple": self.shuffle_multiple,
                                        "scope": self.qtype_filter.key if self.qtype_filter else "all",
-                                       **(extra or {})})
+                                       **(extra or {})},
+                                positions=positions)
+
+    def _position_entry(self, saved: dict) -> "dict | None":
+        """取当前（模式, 范围）组合键对应的位置条目；脏数据一律当作"没有"。"""
+        if not isinstance(saved, dict):
+            return None
+        raw = saved.get("positions")
+        if not isinstance(raw, dict):
+            return None
+        entry = raw.get(self.position_key())
+        return entry if isinstance(entry, dict) else None
 
     def restore_position(self, adopt_mode: bool = True) -> bool:
         """依据已保存的会话信息恢复练习位置。
@@ -375,7 +425,9 @@ class PracticeSession:
         ``adopt_mode=True``（界面默认）会连同上次的模式、范围与打乱开关一起恢复；
         ``adopt_mode=False`` 只恢复位置，保留调用方显式指定的参数。
 
-        位置**优先按题目指纹**在重建后的队列中定位（``pos_fps`` 窗口，兼容旧的单个 ``last_fp``）；
+        位置优先取 ``positions[当前组合键]``（按（模式, 范围）分别记忆），
+        没有该条目时回退到顶层旧格式字段（兼容旧进度文件）；
+        条目内**优先按题目指纹**在重建后的队列中定位（``pos_fps`` 窗口，兼容单个 ``last_fp``）；
         只有指纹全部命中失败时才退化为按序号兜底，且此时返回 ``False``——
         避免"提示已恢复、实际停在另一道题"的假成功。
         """
@@ -396,13 +448,23 @@ class PracticeSession:
                 self.rebuild(mode)
             else:
                 self._items.clear()
+        entry = self._position_entry(saved)
+        if entry is not None:                          # 新格式：按（模式, 范围）组合键记忆
+            for fp in self._saved_fingerprints(entry):
+                if self.goto_question_fp(fp):
+                    return True
+            return self._restore_by_pos(entry)
+        # 旧格式（无 positions 或没有当前组合键）→ 顶层字段，行为与旧版一致
         for fp in self._saved_fingerprints(saved):
             if self.goto_question_fp(fp):
                 return True
-        # 指纹全部落空 → 序号兜底（夹取到合法范围；返回 False 表示"不是精确恢复"）
+        return self._restore_by_pos(saved)
+
+    def _restore_by_pos(self, saved: dict) -> bool:
+        """序号兜底（夹取到合法范围；返回 False 表示"不是精确恢复"）。"""
         try:
             pos = int(saved.get("pos", 0) or 0)
-        except (TypeError, ValueError):                # 进度文件被改坏时按"从头开始"处理
+        except (TypeError, ValueError, OverflowError):  # 进度文件被改坏时按"从头开始"处理
             pos = 0
         if not self.order:
             return False

@@ -1,3 +1,7 @@
-openpyxl
-python-docx
-pypdf
+# 运行期依赖（源码方式运行时安装；打包成 exe 后无需安装）
+openpyxl>=3.1
+python-docx>=1.1
+pypdf>=4.0
+# v1.3.0 Qt 界面：Essentials 已含 QtCore/QtGui/QtWidgets/QtTest
+# 本机 Python 3.14 需要 >= 6.10（6.10 起才提供 cp314 轮子）；Python 3.10–3.13 用 6.5+ 亦可
+PySide6-Essentials>=6.10,<7

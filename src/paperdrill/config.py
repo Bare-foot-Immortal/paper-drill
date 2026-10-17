@@ -46,6 +46,10 @@ class AppSettings:
     record_exam_progress: bool = True
     last_paper_label: str = ""
     window_geometry: str = ""
+    # 界面（v1.3.0 Qt 版新增；旧配置文件缺这些字段时取默认值，互不影响）
+    theme: str = "system"              # system / light / dark
+    last_page: str = "practice"        # practice / exam / library
+    qt_window_state: str = ""          # Qt 主窗口几何 "WxH+X+Y"
 
     # ------------------------------------------------------------ 便捷
     def scores(self) -> dict:

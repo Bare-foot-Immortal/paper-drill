@@ -17,11 +17,15 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-# 测试里需要断言 tkinter 不可用等场景，允许在 except 中直接 raise（已带 from）
+# 测试里需要断言 tkinter / PySide6 不可用等场景，允许在 except 中直接 raise（已带 from）
 "tests/*" = []
+# 兼容 Qt 命名的自定义函数名（例如包装 QTimer.singleShot 的 QTimerSingleShot）
+"src/paperdrill/ui/controller.py" = ["N802"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
 # 测试为 unittest 风格，pytest 可直接收集运行
 python_files = ["test_*.py"]
+# 说明：Qt 测试自行在导入前设置 QT_QPA_PLATFORM=offscreen（见 tests/qt_support.py），
+# 因此不需要 pytest-env 之类的插件，pytest 与 unittest 两种跑法行为一致。

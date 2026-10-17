@@ -4,3 +4,5 @@ pillow
 reportlab
 pytest
 ruff
+# v1.3.0 Qt 界面运行时依赖（Essentials 已包含 QtCore/QtGui/QtWidgets/QtTest/QtSvg）
+PySide6-Essentials>=6.10,<7

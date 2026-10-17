@@ -50,7 +50,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--exam", default="", help="无界面模拟考试：指定卷号（如 A），交卷后打印成绩")
     p.add_argument("--exam-ratio", type=float, default=0.8, help="模拟考试中答对的比例（0~1）")
     p.add_argument("--make-template", metavar="PATH", help="生成题库模板文件后退出")
-    p.add_argument("--gui-selftest", action="store_true", help="界面无头自检（发布验收用）")
+    p.add_argument("--gui-selftest", action="store_true", help="界面无头自检（tkinter 版，发布验收用）")
+    p.add_argument("--qt-selftest", action="store_true", help="界面无头自检（Qt/PySide6 版，发布验收用）")
     p.add_argument("--out", default="", help="自检时的进度目录")
     p.add_argument("--result", default="", help="自检结果 JSON 路径")
     p.add_argument("--exercises", type=int, default=30, help="自检时作答的题目数")
@@ -247,6 +248,14 @@ def main(argv: "list[str] | None" = None) -> int:
         from .gui import selftest
 
         return selftest(bank, args.result, args.out, args.exercises, args.seed)
+
+    if args.qt_selftest:
+        if not bank:
+            print("[错误] 自检需要 --bank 指定题库。")
+            return 2
+        from .qt_app import selftest as qt_selftest
+
+        return qt_selftest(bank, args.result, args.out, args.exercises, args.seed)
 
     if args.practice and bank:
         return _headless_practice(bank, args.practice, args.mode)

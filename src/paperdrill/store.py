@@ -488,16 +488,27 @@ class ProgressStore:
     # ------------------------------------------------------------ 会话位置
     def save_session(self, mode: str, last_question: "Question | None", pos: int,
                      shuffle: bool, extra: "dict | None" = None,
-                     window: "Sequence[Question] | None" = None) -> None:
+                     window: "Sequence[Question] | None" = None,
+                     positions: "dict | None" = None) -> None:
         """保存会话位置。
 
         ``window`` 为**导航窗口**（当前位置起的若干道题），按顺序落盘到 ``pos_fps``。
         只靠 ``pos``（序号）在随机/只练未做模式下会错位，恢复时必须以指纹为准。
+
+        ``positions`` 为**按（模式, 范围）组合键分别记忆**的位置表：
+        ``{组合键: {"last_fp": str, "pos_fps": [str], "pos": int, "ts": str}}``。
+        传 ``None`` 表示沿用旧 session 里已有的 ``positions``——这样其它直接调用
+        ``save_session`` 的代码不会把手写/已有的位置表抹掉。顶层字段保持原样，
+        旧版本与旧测试仍按 ``last_fp`` / ``pos`` 读取。
         """
         fps = [q.fingerprint for q in (window or []) if q is not None]
         if not fps and last_question is not None:
             fps = [last_question.fingerprint]
-        self.progress.session = {
+        old = self.progress.session if isinstance(self.progress.session, dict) else {}
+        if positions is None:
+            kept = old.get("positions")
+            positions = dict(kept) if isinstance(kept, dict) else {}
+        session = {
             "mode": mode,
             "last_fp": last_question.fingerprint if last_question else (fps[0] if fps else ""),
             "pos_fps": fps,
@@ -506,7 +517,10 @@ class ProgressStore:
             "ts": _now(),
         }
         if extra:
-            self.progress.session.update(extra)
+            session.update(extra)
+        if isinstance(positions, dict) and positions:
+            session["positions"] = dict(positions)
+        self.progress.session = session
         self.save()
 
     def saved_session(self) -> dict:

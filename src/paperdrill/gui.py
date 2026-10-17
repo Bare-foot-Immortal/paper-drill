@@ -780,11 +780,13 @@ class PaperDrillApp(tk.Tk):
             self._save_settings()
             return
         self._cancel_auto_next()
+        self.session.save_position()                 # 先记住切换前（旧范围）的位置
         self.session.rebuild(qtype_filter=scope.qtype)
         self._save_settings()
         if self.session.empty:
             self._render_empty(self.session.mode, scope)
             return
+        self.session.restore_position(adopt_mode=False)   # 回到该范围上次位置
         self.session.save_position()
         self._render_current()
 
@@ -794,11 +796,13 @@ class PaperDrillApp(tk.Tk):
             self._save_settings()
             return
         self._cancel_auto_next()
+        self.session.save_position()                 # 先记住切换前（旧模式）的位置
         self.session.rebuild(mode)
         self._save_settings()
         if self.session.empty:
             self._render_empty(mode, self._scope_of_qtype(self.session.qtype_filter))
             return
+        self.session.restore_position(adopt_mode=False)   # 回到该模式上次位置
         self.session.save_position()
         self._render_current()
 

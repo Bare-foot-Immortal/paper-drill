@@ -10,6 +10,8 @@ on:
 env:
   PYTHONIOENCODING: utf-8
   PYTHONUTF8: '1'
+  # Qt 界面测试在无显示环境下用 offscreen 平台运行
+  QT_QPA_PLATFORM: offscreen
 
 permissions:
   contents: write
@@ -32,19 +34,31 @@ jobs:
       - name: 生成合成示例题库与测试夹具
         run: python tools/make_samples.py
 
+      - name: 生成应用图标
+        run: python tools/make_icon.py
+
+      - name: 确认 PySide6 可用（防止 Qt 测试整片静默跳过）
+        run: |
+          python -c "import PySide6; from PySide6.QtWidgets import QApplication; print('PySide6', PySide6.__version__)"
+
       - name: 代码检查（ruff）
         run: ruff check src tools tests
 
       - name: 运行测试（pytest）
         env:
           PYTHONIOENCODING: utf-8
+          QT_QPA_PLATFORM: offscreen
         run: pytest -q --junitxml=pytest.xml
 
       - name: 测试健康检查（防止夹具缺失导致整片静默跳过）
         run: python tools/check_test_health.py pytest.xml
 
-      - name: 生成图标
-        run: python tools/make_icon.py
+      - name: Qt 界面无头自检（端到端闭环）
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PYTHONPATH: src
+        run: |
+          python -m paperdrill --qt-selftest --bank fixtures/样例题库.xlsx --out build/qt_selftest_progress --result build/qt_selftest.json
 
       - name: 打包单文件 exe
         shell: pwsh
@@ -63,6 +77,26 @@ jobs:
           if ($text -notmatch "共\s*52\s*题") { throw "exe 未正确解析题库：$text" }
           Write-Host "[OK] exe 烟测通过"
 
+      - name: exe 烟测（Qt 界面自检闭环 + 图标/版本）
+        shell: pwsh
+        run: |
+          $out = Join-Path $env:TEMP ("pd_qt_smoke_" + [Guid]::NewGuid().ToString('N').Substring(0, 8))
+          New-Item -ItemType Directory -Path $out -Force | Out-Null
+          $result = Join-Path $out "result.json"
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          $proc = Start-Process -FilePath "./dist/PaperDrill.exe" `
+            -ArgumentList @("--qt-selftest", "--bank", "fixtures/样例题库.xlsx", "--out", (Join-Path $out 'progress'), "--result", $result) `
+            -Wait -PassThru
+          Remove-Item Env:\QT_QPA_PLATFORM -ErrorAction SilentlyContinue
+          if ($proc.ExitCode -ne 0) { throw "Qt 自检退出码 $($proc.ExitCode)" }
+          if (-not (Test-Path $result)) { throw "未生成自检结果：$result" }
+          $data = Get-Content -Raw -Encoding UTF8 $result | ConvertFrom-Json
+          if (-not $data.ok) { throw "Qt 自检未通过：stage=$($data.stage) error=$($data.error)" }
+          if (-not $data.icon.file_exists -or -not $data.icon.app_icon_ok -or -not $data.icon.window_icon_ok) {
+            throw "应用图标自检未通过：$($data.icon | ConvertTo-Json -Compress)"
+          }
+          Write-Host "[OK] exe Qt 自检通过（版本 $($data.version)，图标 $($data.icon.path)）"
+
       - name: 上传构建产物（工作流附件）
         uses: actions/upload-artifact@v4
         with:
@@ -75,5 +109,5 @@ jobs:
         with:
           files: dist/PaperDrill.exe
           body: |
-            由 GitHub Actions 自动构建（AI 开发，见 AI-DEVELOPED.md）。
-            下载 `PaperDrill.exe` 即可直接运行（Windows 10/11 x64，免安装、免联网）。
+            由 GitHub Actions 自动构建，下载 `PaperDrill.exe` 即可直接运行
+            （Windows 10/11 x64，免安装、免联网）。

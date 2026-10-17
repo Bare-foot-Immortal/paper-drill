@@ -4,9 +4,15 @@
 用法： pytest -q --junitxml=pytest.xml && python tools/check_test_health.py pytest.xml
 
 判定（任一不满足即失败）：
-* 收集到的用例数 >= --min-tests（默认 150）
-* 跳过数 <= --max-skips（默认 45；CI 的 Windows runner 无可用 Tcl，
-  按设计会跳过约 30 个界面/键盘用例；夹具缺失导致的"整片静默跳过"会明显超过该值）
+* 收集到的用例数 >= --min-tests（默认 300；v1.3.0 起含约 120 项 Qt 界面测试，
+  领域层基线约 190 项，合计 300+）
+* 跳过数 <= --max-skips（默认 60；CI 的 Windows runner 可能没有可用 Tcl，
+  按设计会跳过约 30 个 tkinter 界面/键盘用例，属于预期；
+  夹具缺失或 PySide6 未装上导致的"整片静默跳过"会明显超过该值）
+
+v1.3.0 说明：Qt 测试自身也会在 PySide6 缺失时整片跳过，
+因此 CI 另有一条"确认 PySide6 可用"的前置步骤（见 .github/workflows/build.yml），
+避免"没装 Qt 依旧绿灯"。
 """
 from __future__ import annotations
 
@@ -18,8 +24,8 @@ from pathlib import Path
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("report", help="pytest --junitxml 产出的 XML 文件")
-    ap.add_argument("--min-tests", type=int, default=150)
-    ap.add_argument("--max-skips", type=int, default=45)
+    ap.add_argument("--min-tests", type=int, default=300)
+    ap.add_argument("--max-skips", type=int, default=60)
     args = ap.parse_args()
 
     path = Path(args.report)

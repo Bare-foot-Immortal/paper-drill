@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>刷题匠 PaperDrill · 题库工具（AI 开发）</title>
+<title>刷题匠 PaperDrill · 题库练习与模拟考试</title>
 <style>
   :root {
     --bg: #0f1720; --card: #16212e; --fg: #e8eef5; --muted: #9fb0c3;
@@ -22,9 +22,6 @@
   .tag { color: var(--muted); }
   .badge { display: inline-block; margin: 12px 8px 0 0; padding: 4px 10px; font-size: 13px;
             border: 1px solid var(--border); border-radius: 999px; color: var(--muted); }
-  .ai { margin: 20px 0; padding: 14px 16px; border-radius: 10px;
-         border: 1px solid var(--accent); background: rgba(53,193,166,.08); }
-  .ai b { color: var(--accent); }
   h2 { font-size: 20px; margin: 36px 0 12px; }
   .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
   .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
@@ -44,26 +41,21 @@
   footer { margin-top: 44px; padding-top: 18px; border-top: 1px solid var(--border);
             color: var(--muted); font-size: 14px; }
   a { color: var(--accent2); }
+  img.shot { width: 100%; border: 1px solid var(--border); border-radius: 12px; margin-top: 12px; }
 </style>
 </head>
 <body>
 <div class="wrap">
   <header>
     <h1>刷题匠 PaperDrill</h1>
-    <div class="tag">题库刷题练习 + 模拟考试桌面工具 ｜ 版本 v1.2.4 ｜ Windows 单文件程序，免安装、免联网</div>
+    <div class="tag">题库刷题练习 + 模拟考试桌面工具 ｜ 版本 v1.3.2 ｜ Windows 单文件程序，免安装、免联网</div>
     <div>
-      <span class="badge">AI 开发（DeepSeek）</span>
+      <span class="badge">Python + Qt (PySide6)</span>
       <span class="badge">MIT License</span>
-      <span class="badge">自动化测试 192 项通过 / 1 跳过</span>
       <span class="badge">Windows 10/11 x64</span>
+      <span class="badge">无联网 / 无上传</span>
     </div>
   </header>
-
-  <div class="ai">
-    ⚠️ <b>本项目由 AI 开发</b>：源码、测试、文档与构建脚本均由 AI（DeepSeek）编写，人类提出需求并验收结果。
-    请在使用前自行审阅代码。详见
-    <a href="https://github.com/Bare-foot-Immortal/paper-drill/blob/main/AI-DEVELOPED.md">AI-DEVELOPED.md</a>。
-  </div>
 
   <div class="btns">
     <a class="btn" href="https://github.com/Bare-foot-Immortal/paper-drill/releases/latest">下载 PaperDrill.exe（Release）</a>
@@ -77,17 +69,22 @@
   <h2>功能一览</h2>
   <div class="grid">
     <div class="card"><h3>三种题型</h3><p>单选 / 多选 / 判断，统一渲染与判题</p></div>
-    <div class="card"><h3>多格式题库</h3><p>Excel、CSV、TXT、JSON、Word（表格型/段落文本型）、PDF（文本型）</p></div>
+    <div class="card"><h3>多格式题库</h3><p>Excel、CSV、TXT、JSON、Word（表格型 / 段落文本型）、PDF（文本型）</p></div>
     <div class="card"><h3>实时判题</h3><p>单选与判断点选即判，多选提交判；显示正确答案与解析</p></div>
     <div class="card"><h3>练习模式</h3><p>顺序 / 随机 / 错题重练 / 只练未做，可叠加按题型练习</p></div>
+    <div class="card"><h3>题目导览</h3><p>5 列题号方格，点击跳题；答对绿、答错红、未答灰，当前题高亮，题多时内部滚动</p></div>
     <div class="card"><h3>自定义组卷</h3><p>题量与题型占比任意配置，一轮覆盖全部题目，末卷自动补题</p></div>
     <div class="card"><h3>真实模拟考试</h3><p>作答期不提示对错，交卷一次性评分：总分、正确率、各题型明细、逐题明细</p></div>
-    <div class="card"><h3>进度自动保留</h3><p>题目指纹定位，题库增删或改名自动继承进度；关闭再打开仍停在上次那道题，随机 / 只练未做模式同样按指纹续做</p></div>
-    <div class="card"><h3>指纹续做（v1.2.4）</h3><p>关闭前保存「当前题 + 后续最多 3 题」的指纹窗口，重开时在当前队列中按指纹定位；全部未命中才退回原下标，不再谎报「已恢复进度」</p></div>
-    <div class="card"><h3>题库删减（v1.2.4）</h3><p>练习 → 题库删减…：排除不想练的题目（题型 + 关键词筛选，可随时恢复），不改动题库文件；删减后不参与练习、错题本、统计与组卷</p></div>
-    <div class="card"><h3>题库选择（v1.2.4）</h3><p>文件 → 选择题库…（Ctrl+B）：记录最近使用的题库，可导入题库文件、扫描文件夹、移除记录；文件已缺失的记录置灰，移除记录不会删除题库文件</p></div>
-    <div class="card"><h3>快捷键</h3><p>1~8 选答案、Enter 下一题、← → 翻题、F9 交卷</p></div>
+    <div class="card"><h3>进度自动保留</h3><p>题目指纹定位，题库增删或改名自动继承进度；关闭再打开仍停在上次那道题</p></div>
+    <div class="card"><h3>按模式记忆位置</h3><p>练习模式与范围分别记忆位置，切走再切回来仍停在各自上次的题</p></div>
+    <div class="card"><h3>题库删减与选择</h3><p>排除不想练的题目（不改题库文件，可随时恢复）；最近使用的题库一键切换</p></div>
+    <div class="card"><h3>快捷键</h3><p>1~8 选答案、Enter 提交/下一题、← → 翻题、F9 交卷；页面底部常驻提示条</p></div>
+    <div class="card"><h3>桌面体验</h3><p>深浅主题、高 DPI、窗口/任务栏图标、无闪窗重绘</p></div>
   </div>
+
+  <h2>界面预览</h2>
+  <p class="tag">练习页：题卡内作答按钮、右侧题目导览、底部快捷键长条。</p>
+  <img class="shot" src="screenshots/11-practice-navigator.png" alt="练习页截图">
 
   <h2>题库格式</h2>
   <table>
@@ -116,32 +113,39 @@ python -m venv .venv
 pip install -r requirements.txt
 python tools/make_samples.py            # 生成合成示例题库
 set PYTHONPATH=src
-python -m paperdrill --bank samples\示例题库.xlsx
+python -m paperdrill --bank samples\示例题库.xlsx</pre>
 
-# 自行打包单文件 exe
-powershell -ExecutionPolicy Bypass -File build_exe.ps1</pre>
-
-  <h2>测试与代码检查</h2>
-  <pre>pip install -r requirements.txt -r requirements-dev.txt
+  <h2>测试与构建</h2>
+  <pre>pip install -r requirements-dev.txt
 python tools/make_samples.py
-pytest -q                 # 自动化测试
-ruff check src tools tests  # 代码检查</pre>
-  <p class="tag">当前状态：<code>192 passed, 1 skipped</code>，<code>ruff check</code> 零告警。CI（GitHub Actions）在每次推送时执行上述步骤，并自动打包 Windows 单文件 exe。</p>
+python tools/make_icon.py
+set QT_QPA_PLATFORM=offscreen
+python -m unittest discover -s tests   # 或 pytest -q
+ruff check src tools tests             # 代码检查
+
+# 打包单文件 exe（含 Qt 运行时与图标）
+powershell -ExecutionPolicy Bypass -File build_exe.ps1</pre>
+  <p class="tag">CI 在每次推送时运行完整测试、Qt 无头自检（<code>--qt-selftest</code>）与打包烟测；
+    打 <code>v*</code> 标签自动发布 Release。</p>
 
   <h2>文档</h2>
   <ul>
     <li><a href="https://github.com/Bare-foot-Immortal/paper-drill/blob/main/docs/01-需求规格说明书.md">需求规格说明书</a></li>
     <li><a href="https://github.com/Bare-foot-Immortal/paper-drill/blob/main/docs/02-概要设计说明书.md">概要设计说明书</a></li>
-    <li><a href="https://github.com/Bare-foot-Immortal/paper-drill/blob/main/docs/03-测试报告.md">测试报告（含逐条验收对照）</a></li>
+    <li><a href="https://github.com/Bare-foot-Immortal/paper-drill/blob/main/docs/03-测试报告.md">测试报告</a></li>
     <li><a href="https://github.com/Bare-foot-Immortal/paper-drill/blob/main/docs/04-快捷键缺陷分析与修复.md">缺陷分析：Enter 快捷键失效</a></li>
     <li><a href="https://github.com/Bare-foot-Immortal/paper-drill/blob/main/docs/05-重做已作答题目缺陷分析与修复.md">缺陷分析：重做已作答题目被锁定</a></li>
     <li><a href="https://github.com/Bare-foot-Immortal/paper-drill/blob/main/docs/06-Word与PDF题库导入说明.md">Word / PDF 题库导入说明</a></li>
     <li><a href="https://github.com/Bare-foot-Immortal/paper-drill/blob/main/docs/07-进度延续与题库删减选择.md">进度延续与题库删减选择</a></li>
+    <li><a href="https://github.com/Bare-foot-Immortal/paper-drill/blob/main/docs/08-界面现代化改造需求规格.md">界面现代化改造需求规格</a></li>
+    <li><a href="https://github.com/Bare-foot-Immortal/paper-drill/blob/main/docs/09-Qt界面概要设计.md">Qt 界面概要设计</a></li>
+    <li><a href="https://github.com/Bare-foot-Immortal/paper-drill/blob/main/docs/10-Qt界面测试报告.md">Qt 界面测试报告</a></li>
+    <li><a href="https://github.com/Bare-foot-Immortal/paper-drill/blob/main/docs/11-练习位置记忆与练习页布局改造.md">练习位置记忆与练习页布局改造</a></li>
+    <li><a href="https://github.com/Bare-foot-Immortal/paper-drill/blob/main/docs/12-应用图标与版本号修复.md">应用图标与版本号修复</a></li>
   </ul>
 
   <footer>
-    <div>AI 开发声明：<a href="https://github.com/Bare-foot-Immortal/paper-drill/blob/main/AI-DEVELOPED.md">AI-DEVELOPED.md</a>
-      ｜ 许可：<a href="https://github.com/Bare-foot-Immortal/paper-drill/blob/main/LICENSE">MIT</a>
+    <div>许可：<a href="https://github.com/Bare-foot-Immortal/paper-drill/blob/main/LICENSE">MIT</a>
       ｜ 仓库：<a href="https://github.com/Bare-foot-Immortal/paper-drill">Bare-foot-Immortal/paper-drill</a></div>
     <div>软件按「现状」提供，不提供任何担保；请自行确保导入的题库内容合法合规。</div>
   </footer>
