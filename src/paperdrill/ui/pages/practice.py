@@ -67,7 +67,7 @@ class PracticePage(QWidget):
         self.option_rows: list = []
         self._build()
         # 自订阅控制器信号：页面可独立实例化（测试/嵌入式使用）也会保持最新
-        self.controller.practice_changed.connect(self._on_controller_changed)
+        # 只订阅 state_changed：控制器每次变化都会发它，避免与 practice_changed 重复刷新
         self.controller.state_changed.connect(self._on_controller_changed)
         self.refresh(self.controller.state)
 

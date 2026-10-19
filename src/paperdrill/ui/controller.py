@@ -121,6 +121,7 @@ class UiState:
 
     # ---- 试卷与考试
     round: "PaperRound | None" = None
+    round_used_labels: set = field(default_factory=set)   # 本轮已考过的卷号（只随本轮存活）
     exam: "ExamSession | None" = None
     exam_result: "ExamResult | None" = None
     exam_index: int = 0
@@ -273,7 +274,10 @@ class PaperDrillController(QObject):
             self._emit_status(f"题库解析失败：{exc}")
             return False
         if not result.questions:
-            self._emit_status("题库为空：没有解析到任何可用题目，请检查题库格式。")
+            detail = ""
+            if getattr(result, "issues", None):
+                detail = f"（首个原因：{result.issues[0]}）"
+            self._emit_status(f"题库为空：没有解析到任何可用题目{detail}，请检查题库格式。")
             return False
 
         st = self.state
@@ -323,6 +327,7 @@ class PaperDrillController(QObject):
         st.shuffle_single = session.shuffle_single
         st.shuffle_multiple = session.shuffle_multiple
         st.round = None
+        st.round_used_labels = set()
         st.exam = None
         st.exam_result = None
         st.exam_index = 0
@@ -494,6 +499,7 @@ class PaperDrillController(QObject):
                 selection.add(letter)
             st.selection = selection
             self.practice_changed.emit()
+            self.state_changed.emit()
             return None
         st.selection = {letter}
         return self.submit()
@@ -528,11 +534,16 @@ class PaperDrillController(QObject):
         if item is None:
             return False
         st.answered = True
+        st.selection = set()          # 看答案不算作答：别把未提交的勾选画成红叉（P3-2）
         st.feedback = f"正确答案：{item.answer_display()}（已跳过作答）"
         st.feedback_kind = "reveal"
         st.analysis_text = self._analysis_of(item)
         self._refresh_all(raise_practice=True)
         return True
+
+    def cancel_auto_next(self) -> None:
+        """作废待执行的「答对自动下一题」（离开练习页/打开对话框时调用）。"""
+        self._auto_next_seq += 1
 
     def _schedule_auto_next(self) -> None:
         """答对且开启自动下一题时，延迟跳题；通过序号作废被后续操作取代的跳转。"""
@@ -705,9 +716,12 @@ class PaperDrillController(QObject):
     # ================================================================ 试卷
     def set_blueprint(self, single: int, multiple: int, judge: int) -> None:
         st = self.state
-        st.blueprint = Blueprint(max(0, int(single)), max(0, int(multiple)), max(0, int(judge)))
+        st.blueprint = Blueprint(max(0, min(10_000, int(single))),
+                                 max(0, min(10_000, int(multiple))),
+                                 max(0, min(10_000, int(judge))))
         self.save_settings()
         self.paper_changed.emit()
+        self.state_changed.emit()
 
     def set_scores(self, single: "float | str", multiple: "float | str",
                    judge: "float | str") -> None:
@@ -717,13 +731,15 @@ class PaperDrillController(QObject):
                      "judge": _float_value(judge, 1.0)}
         self.save_settings()
         self.paper_changed.emit()
+        self.state_changed.emit()
 
     def set_round_length(self, length: "int | None", auto: bool) -> None:
         st = self.state
         st.round_auto = bool(auto)
-        st.round_length = max(0, int(length or 0))
+        st.round_length = max(0, min(10_000, int(length or 0)))
         self.save_settings()
         self.paper_changed.emit()
+        self.state_changed.emit()
 
     def blueprint_total(self) -> int:
         return self.state.blueprint.total
@@ -759,8 +775,11 @@ class PaperDrillController(QObject):
             parts.append(f"判断 {stats['judge']}÷{bp.judge}={-(-stats['judge'] // bp.judge)}张")
         return f"覆盖题库全部题目需 {self.min_round_length()} 张/轮（" + "，".join(parts) + "）"
 
-    def generate_round(self) -> "PaperRound | None":
+    def generate_round(self, force: bool = False) -> "PaperRound | None":
         st = self.state
+        if self.has_unsubmitted_exam() and not force:
+            self._emit_status("当前有未交卷的模拟考试：请先交卷，或确认放弃后再重新生成试卷。")
+            return None
         questions = self.active_questions()
         if not questions:
             self._emit_status("请先导入题库（或题库题目已被全部删减）。")
@@ -778,6 +797,7 @@ class PaperDrillController(QObject):
             self._emit_status(f"生成失败：{exc}")
             return None
         st.round = rnd
+        st.round_used_labels = set()
         st.exam = None
         st.exam_result = None
         st.exam_index = 0
@@ -818,15 +838,25 @@ class PaperDrillController(QObject):
         return rnd.papers[index]
 
     def used_paper_labels(self) -> set[str]:
-        st = self.state
-        if not st.store:
-            return set()
-        return {str(e.get("paper_label")) for e in st.store.exam_history()}
+        """本轮已考过的卷号。
+
+        只看**当前这一轮**（``round_used_labels``）：历史成绩里的卷号 A/B/C 每轮都会
+        重复，拿历史判定"未考"会让重新生成一轮后永远提示"本轮已考完"（审计 P2-5）。
+        """
+        return set(self.state.round_used_labels)
 
     # ================================================================ 考试
-    def start_exam(self, paper: "Paper | None") -> bool:
+    def has_unsubmitted_exam(self) -> bool:
+        """当前是否有未交卷的模拟考试（作答只在内存，丢弃前必须确认）。"""
+        exam = self.state.exam
+        return exam is not None and not exam.submitted
+
+    def start_exam(self, paper: "Paper | None", allow_replace: bool = False) -> bool:
         st = self.state
         if paper is None or st.store is None:
+            return False
+        if self.has_unsubmitted_exam() and not allow_replace:
+            self._emit_status("当前有未交卷的模拟考试：请先交卷，或确认放弃后重新开始。")
             return False
         try:
             st.exam = ExamSession(
@@ -843,7 +873,7 @@ class PaperDrillController(QObject):
         self._emit_status(f"{paper.label}卷模拟考试进行中（作答期间不显示对错）")
         return True
 
-    def start_next_unused_paper(self) -> bool:
+    def start_next_unused_paper(self, allow_replace: bool = False) -> bool:
         rnd = self.state.round
         if rnd is None:
             self._emit_status("请先生成一轮试卷。")
@@ -851,7 +881,7 @@ class PaperDrillController(QObject):
         used = self.used_paper_labels()
         for paper in rnd.papers:
             if paper.label not in used:
-                return self.start_exam(paper)
+                return self.start_exam(paper, allow_replace=allow_replace)
         self._emit_status("本轮所有试卷都已考过，可重新生成一轮。")
         return False
 
@@ -928,6 +958,7 @@ class PaperDrillController(QObject):
             return None
         st.exam_result = result
         st.exam_view = "result"
+        st.round_used_labels = set(st.round_used_labels) | {str(result.paper_label)}
         self.settings.last_paper_label = result.paper_label
         self.save_settings()
         # 错题本 / 未做队列已变化 → 重建练习队列，但**练习位置保持不变**
@@ -970,27 +1001,36 @@ class PaperDrillController(QObject):
         self._render_practice_question()
 
     # ================================================================ 数据管理
-    def exclude_questions(self, questions: Iterable[Question]) -> int:
+    def exclude_questions(self, questions: Iterable[Question], force: bool = False) -> int:
         st = self.state
         if st.store is None:
+            return 0
+        if self.has_unsubmitted_exam() and not force:
+            self._emit_status("当前有未交卷的模拟考试：删减题库题目会作废试卷，请先交卷或确认放弃。")
             return 0
         added = st.store.exclude(list(questions))
         if added:
             self._apply_filter_change(f"已删减 {added} 道题目")
         return added
 
-    def include_questions(self, questions: Iterable[Question]) -> int:
+    def include_questions(self, questions: Iterable[Question], force: bool = False) -> int:
         st = self.state
         if st.store is None:
+            return 0
+        if self.has_unsubmitted_exam() and not force:
+            self._emit_status("当前有未交卷的模拟考试：恢复题库题目会作废试卷，请先交卷或确认放弃。")
             return 0
         back = st.store.include(list(questions))
         if back:
             self._apply_filter_change(f"已恢复 {back} 道题目")
         return back
 
-    def restore_all_excluded(self) -> int:
+    def restore_all_excluded(self, force: bool = False) -> int:
         st = self.state
         if st.store is None:
+            return 0
+        if self.has_unsubmitted_exam() and not force:
+            self._emit_status("当前有未交卷的模拟考试：恢复题库题目会作废试卷，请先交卷或确认放弃。")
             return 0
         count = st.store.clear_excluded()
         if count:
@@ -1021,6 +1061,7 @@ class PaperDrillController(QObject):
             if not st.session.empty:
                 st.session.cursor = 0
         st.round = None
+        st.round_used_labels = set()
         st.exam = None
         st.exam_result = None
         st.exam_index = 0
@@ -1058,9 +1099,15 @@ class PaperDrillController(QObject):
         st = self.state
         if st.store is None or st.session is None:
             return False
-        st.store.reset()
+        try:
+            st.store.reset()
+        except Exception as exc:
+            st.save_error = f"{type(exc).__name__}: {exc}"
+            self._emit_status(f"⚠ 进度未能重置：{st.save_error}")
+            return False
         # 同时清空界面上的"旧考试/旧试卷"，否则成绩页会继续显示已被清掉的分数
         st.round = None
+        st.round_used_labels = set()
         st.exam = None
         st.exam_result = None
         st.exam_index = 0
@@ -1114,22 +1161,41 @@ class PaperDrillController(QObject):
         return changed
 
     def forget_with_progress(self, path: "str | Path") -> int:
-        """移除题库记录并清理其进度文件；返回清理的进度文件数（0/1）。"""
+        """移除题库记录并清理其进度；返回清理的进度文件数。
+
+        * 当前正在使用的题库：走 ``reset_progress()``（同时清空内存与文件），
+          否则下一次作答会把旧记录整份写回（审计 P2-2）；
+        * 题库文件已缺失/损坏：按进度文件里的 ``bank_name`` 兜底匹配，
+          不再留下永远删不掉的孤儿进度（审计 P2-3）。
+        """
+        st = self.state
+        target = Path(path)
         hit_key = ""
         try:
             loaded = load_bank(str(path))
             if loaded.questions:
-                hit_key = bank_key_of(Path(path).stem, loaded.questions)
+                hit_key = bank_key_of(target.stem, loaded.questions)
         except Exception:
             hit_key = ""
+
         cleaned = 0
-        if hit_key:
-            st = self.state
-            if st.store is not None and st.store.progress.bank_key == hit_key:
-                st.store.delete()
-                cleaned = 1
-            elif ProgressStore.delete_by_key(hit_key, self.progress_dir):
-                cleaned = 1
+        if hit_key and st.store is not None and st.store.progress.bank_key == hit_key:
+            self.reset_progress()                     # 当前题库：内存 + 文件一起清
+            cleaned = 1
+        elif hit_key and ProgressStore.delete_by_key(hit_key, self.progress_dir):
+            cleaned = 1
+        else:
+            # 兜底：题库文件读不到时，按文件名/题库名匹配进度文件
+            for row in ProgressStore.list_all(self.progress_dir):
+                name = str(row.get("name", ""))
+                key = str(row.get("key", ""))
+                if target.stem not in (name, key) and name != target.stem:
+                    continue
+                if (st.store is not None and st.store.path.stem == key):
+                    self.reset_progress()
+                    cleaned += 1
+                elif ProgressStore.delete_by_key(key, self.progress_dir):
+                    cleaned += 1
         self.library.forget(path)
         self.library_changed.emit()
         return cleaned
@@ -1148,10 +1214,8 @@ class PaperDrillController(QObject):
         if err:
             st.save_error = err
             self._emit_status(f"⚠ 进度未能保存：{err}")
-        elif st.save_error:
-            # 之前 _save_position 捕获过的错误：下次成功落盘前一直提示
-            pass
         else:
+            # 落盘恢复正常 → 清掉旧的告警，不能永久残留（审计 P3-1）
             st.save_error = ""
 
     def _save_position(self) -> None:
@@ -1169,8 +1233,8 @@ class PaperDrillController(QObject):
             st.save_error = f"{type(exc).__name__}: {exc}"
             self._emit_status(f"⚠ 进度未能保存：{st.save_error}")
             return
-        if not st.save_error:
-            pass
+        if not getattr(st.store, "last_save_error", ""):
+            st.save_error = ""            # 落盘恢复后清掉旧告警
 
     def _refresh_all(self, raise_practice: bool = False) -> None:
         self.state_changed.emit()

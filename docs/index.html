@@ -48,12 +48,13 @@
 <div class="wrap">
   <header>
     <h1>刷题匠 PaperDrill</h1>
-    <div class="tag">题库刷题练习 + 模拟考试桌面工具 ｜ 版本 v1.3.2 ｜ Windows 单文件程序，免安装、免联网</div>
+    <div class="tag">题库刷题练习 + 模拟考试桌面工具 ｜ 版本 v1.3.3 ｜ Windows 单文件程序，免安装、免联网</div>
     <div>
       <span class="badge">Python + Qt (PySide6)</span>
       <span class="badge">MIT License</span>
       <span class="badge">Windows 10/11 x64</span>
       <span class="badge">无联网 / 无上传</span>
+      <span class="badge">启动约 2 s</span>
     </div>
   </header>
 
@@ -124,7 +125,8 @@ python -m unittest discover -s tests   # 或 pytest -q
 ruff check src tools tests             # 代码检查
 
 # 打包单文件 exe（含 Qt 运行时与图标）
-powershell -ExecutionPolicy Bypass -File build_exe.ps1</pre>
+powershell -ExecutionPolicy Bypass -File build_exe.ps1
+# 另出文件夹版（启动更快）：追加 -Portable</pre>
   <p class="tag">CI 在每次推送时运行完整测试、Qt 无头自检（<code>--qt-selftest</code>）与打包烟测；
     打 <code>v*</code> 标签自动发布 Release。</p>
 
@@ -142,6 +144,8 @@ powershell -ExecutionPolicy Bypass -File build_exe.ps1</pre>
     <li><a href="https://github.com/Bare-foot-Immortal/paper-drill/blob/main/docs/10-Qt界面测试报告.md">Qt 界面测试报告</a></li>
     <li><a href="https://github.com/Bare-foot-Immortal/paper-drill/blob/main/docs/11-练习位置记忆与练习页布局改造.md">练习位置记忆与练习页布局改造</a></li>
     <li><a href="https://github.com/Bare-foot-Immortal/paper-drill/blob/main/docs/12-应用图标与版本号修复.md">应用图标与版本号修复</a></li>
+    <li><a href="https://github.com/Bare-foot-Immortal/paper-drill/blob/main/docs/13-缺陷修复记录.md">2026-10 全量缺陷修复记录</a></li>
+    <li><a href="https://github.com/Bare-foot-Immortal/paper-drill/blob/main/docs/14-启动性能优化.md">启动性能优化（v1.3.3）</a></li>
   </ul>
 
   <footer>

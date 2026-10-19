@@ -156,6 +156,7 @@ class PaperDrillApp(tk.Tk):
         self.store: ProgressStore | None = None
         self.session: PracticeSession | None = None
         self.round = None                # PaperRound
+        self.round_used_labels: set[str] = set()
         self.exam: ExamSession | None = None
         self.exam_index = 0
         self.library = BankLibrary.load()     # 题库库（最近使用的题库）
@@ -723,6 +724,7 @@ class PaperDrillApp(tk.Tk):
         self.shuffle_single_var.set(self.session.shuffle_single)
         self.shuffle_multiple_var.set(self.session.shuffle_multiple)
         self.round = None
+        self.round_used_labels = set()
         self.exam = None
         self._clear_paper_tree()
         self.cover_var.set("尚未生成试卷")
@@ -834,7 +836,12 @@ class PaperDrillApp(tk.Tk):
                                    f"确定要清空「{self.store.progress.bank_name}」的全部练习记录吗？\n"
                                    "（已练题数、错题本、正确率、历史成绩都会清空，不可撤销）"):
             return
-        self.store.reset()
+        try:
+            self.store.reset()
+        except Exception as exc:
+            messagebox.showerror("重置失败", f"进度未能保存：{exc}")
+            self.set_status("进度重置失败（文件可能被占用或只读）")
+            return
         self.session = PracticeSession(self.active_questions(), self.store, mode=self.session.mode,
                                        qtype_filter=self.session.qtype_filter,
                                        shuffle_single=self.shuffle_single_var.get(),
@@ -1241,7 +1248,17 @@ class PaperDrillApp(tk.Tk):
         if hasattr(self, "paper_tree"):
             self.paper_tree.delete(*self.paper_tree.get_children())
 
+    def _confirm_discard_exam(self) -> bool:
+        """有未交卷考试时确认放弃（作答只在内存，丢弃前必须让用户知情）。"""
+        if self.exam is not None and not self.exam.submitted:
+            return messagebox.askyesno(
+                "放弃当前考试",
+                "当前有一场未交卷的模拟考试，继续操作会丢弃已作答内容。\n确定继续吗？")
+        return True
+
     def _generate_round(self) -> None:
+        if not self._confirm_discard_exam():
+            return
         questions = self.active_questions()
         if not questions:
             messagebox.showwarning("提示", "请先导入题库（或题库题目已被全部删减）。")
@@ -1272,6 +1289,7 @@ class PaperDrillApp(tk.Tk):
             return
         self.config(cursor="")
         self.round = rnd
+        self.round_used_labels = set()
 
         text = "✔ " + rnd.summary()
         parts = []
@@ -1330,7 +1348,9 @@ class PaperDrillApp(tk.Tk):
         if not self.round:
             messagebox.showinfo("提示", "请先生成一轮试卷。")
             return
-        used = {e.get("paper_label") for e in (self.store.exam_history() if self.store else [])}
+        if not self._confirm_discard_exam():
+            return
+        used = set(getattr(self, "round_used_labels", set()))
         for paper in self.round.papers:
             if paper.label not in used:
                 self._start_exam(paper)
@@ -1339,6 +1359,8 @@ class PaperDrillApp(tk.Tk):
 
     def _start_exam(self, paper) -> None:
         if not self.store:
+            return
+        if not self._confirm_discard_exam():
             return
         self.exam = ExamSession(paper, self.store,
                                 shuffle_single=self.shuffle_single_var.get(),
@@ -1483,6 +1505,7 @@ class PaperDrillApp(tk.Tk):
             messagebox.showerror("交卷失败", f"{exc}\n\n{traceback.format_exc(limit=3)}")
             return
         self.config(cursor="")
+        self.round_used_labels = set(self.round_used_labels) | {str(result.paper_label)}
         self._render_exam_result(result)
         self._show_exam_view("result")
         # 交卷后考试页转为只读，避免选项显示状态与记录的答案不一致
@@ -1821,6 +1844,8 @@ class PaperDrillApp(tk.Tk):
             if not picked:
                 messagebox.showinfo("提示", "请先在「参与练习」列表中选择要删减的题目。")
                 return
+            if not self._confirm_discard_exam():
+                return
             added = self.store.exclude(picked)
             if added:
                 self._apply_filter_change(note=f"已删减 {added} 道题目")
@@ -1830,6 +1855,8 @@ class PaperDrillApp(tk.Tk):
             picked = _selected(cut_tree)
             if not picked:
                 messagebox.showinfo("提示", "请先在「已删减」列表中选择要恢复的题目。")
+                return
+            if not self._confirm_discard_exam():
                 return
             back = self.store.include(picked)
             if back:
@@ -1842,6 +1869,8 @@ class PaperDrillApp(tk.Tk):
                 return
             n = len(self.store.progress.excluded)
             if not messagebox.askyesno("全部恢复", f"确定把全部 {n} 道已删减的题目恢复吗？"):
+                return
+            if not self._confirm_discard_exam():
                 return
             self.store.clear_excluded()
             self._apply_filter_change(note=f"已恢复全部 {n} 道题目")
@@ -1895,6 +1924,7 @@ class PaperDrillApp(tk.Tk):
         else:
             self.session.cursor = 0
         self.round = None                     # 旧试卷按旧题目集生成，作废
+        self.round_used_labels = set()
         self.exam = None
         self._clear_paper_tree()
         self.cover_var.set("尚未生成试卷（题库删减后需重新生成一轮）")
@@ -2121,6 +2151,11 @@ class PaperDrillApp(tk.Tk):
         self.status_var.set(text)
 
     def _on_close(self) -> None:
+        if self.exam is not None and not self.exam.submitted:
+            if not messagebox.askyesno(
+                    "未交卷的模拟考试",
+                    "当前有一场未交卷的模拟考试，关闭窗口会丢失全部作答。\n确定关闭吗？"):
+                return
         self._cancel_auto_next()
         try:
             if self.session and not self.session.empty:

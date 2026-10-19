@@ -124,7 +124,6 @@ class ExamRunPage(QWidget):
         self.theme = theme
         self.option_rows: list[OptionRow] = []
         self._build()
-        self.controller.exam_changed.connect(self._on_controller_changed)
         self.controller.state_changed.connect(self._on_controller_changed)
         self.refresh(self.controller.state)
 

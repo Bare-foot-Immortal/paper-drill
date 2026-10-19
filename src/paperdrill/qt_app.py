@@ -23,7 +23,7 @@ def available() -> bool:
     global _last_error, _app
     try:
         from PySide6.QtWidgets import QApplication  # noqa: F401
-    except Exception as exc:                        # 未安装 / 动态库缺失 / 架构不符
+    except BaseException as exc:                        # 未安装 / 动态库缺失 / 架构不符 / SystemExit
         _last_error = f"{type(exc).__name__}: {exc}"
         return False
     try:

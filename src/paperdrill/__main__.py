@@ -28,7 +28,7 @@ def pick_gui() -> str:
         reason = fallback_reason()
         if reason:
             print(f"[界面] Qt 界面不可用，回退 tkinter：{reason}", file=sys.stderr)
-    except Exception as exc:
+    except BaseException as exc:            # 含 SystemExit：损坏的 Qt 也必须能回退
         print(f"[界面] Qt 界面不可用，回退 tkinter：{exc}", file=sys.stderr)
     return "tk"
 
@@ -52,8 +52,11 @@ def main(argv: "list[str] | None" = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
 
     if args and args[0] in ("--gui",):
-        args = args[1:]
-        return run_gui(args[0] if args else None)
+        rest = args[1:]
+        if len(rest) > 1:
+            print("[错误] --gui 只接受一个题库路径参数。", file=sys.stderr)
+            return 2
+        return run_gui(rest[0] if rest else None)
 
     if len(args) == 1 and not args[0].startswith("-"):
         candidate = Path(args[0])

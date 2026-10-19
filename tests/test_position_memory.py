@@ -136,8 +136,12 @@ class TestSessionPositionMemory(unittest.TestCase):
         self.assertTrue(s.restore_position())
         self.assertEqual(s.current_question().fingerprint, self.questions[7].fingerprint)
 
-    def test_legacy_fallback_when_combo_key_missing(self):
-        """只有旧格式顶层字段、没有当前组合键条目时，仍按顶层字段恢复。"""
+    def test_new_format_missing_combo_key_starts_from_beginning(self):
+        """新格式已有 positions 时，当前（模式, 范围）组合键缺失 → 从头开始。
+
+        不能回退到顶层旧字段：那属于"上一个队列"，会造成首次切到
+        「只练单选 / 只练未做」时停在前一个队列的随机位置（审计 B-F5）。
+        """
         self.store.progress.session = {
             "mode": "order", "last_fp": self.questions[5].fingerprint,
             "pos_fps": [self.questions[5].fingerprint], "pos": 5, "shuffle": True,
@@ -145,8 +149,9 @@ class TestSessionPositionMemory(unittest.TestCase):
         }
         self.store.save()
         s, _ = self._reopen(seed=1)
-        self.assertTrue(s.restore_position(adopt_mode=False))
-        self.assertEqual(s.current_question().fingerprint, self.questions[5].fingerprint)
+        self.assertFalse(s.restore_position(adopt_mode=False))
+        self.assertEqual(s.position, 1)
+        self.assertEqual(s.current_question().fingerprint, self.questions[0].fingerprint)
 
     def test_dirty_positions_never_raise(self):
         """positions 脏数据（非 dict / 条目非 dict / pos 非数字）不得抛异常。"""

@@ -189,6 +189,12 @@ class QuestionFilterDialog(BaseDialog):
                  parent: "QWidget | None" = None) -> None:
         super().__init__("题库删减", theme, parent, (1060, 700))
         self.controller = controller
+        self.force_replace = False
+        if controller.has_unsubmitted_exam():
+            self.force_replace = confirm(
+                self, "放弃当前考试",
+                "当前有一场未交卷的模拟考试；删减/恢复题库题目会作废试卷并丢弃作答。\n"
+                "确定继续吗？")
         self.all_questions: list[Question] = controller.all_questions()
         self.by_fp = {q.fingerprint: q for q in self.all_questions}
         self.add_header(
@@ -284,7 +290,7 @@ class QuestionFilterDialog(BaseDialog):
         if not picked:
             notify(self, "提示", "请先在「参与练习」列表中选择要删减的题目。")
             return 0
-        count = self.controller.exclude_questions(picked)
+        count = self.controller.exclude_questions(picked, force=self.force_replace)
         self.reload()
         if count:
             self.controller.report_status(f"已删减 {count} 道题目（题库原文件未改动）")
@@ -295,7 +301,7 @@ class QuestionFilterDialog(BaseDialog):
         if not picked:
             notify(self, "提示", "请先在「已删减」列表中选择要恢复的题目。")
             return 0
-        count = self.controller.include_questions(picked)
+        count = self.controller.include_questions(picked, force=self.force_replace)
         self.reload()
         if count:
             self.controller.report_status(f"已恢复 {count} 道题目")
@@ -308,7 +314,7 @@ class QuestionFilterDialog(BaseDialog):
             return 0
         if not confirm(self, "全部恢复", f"确定把全部 {len(excluded)} 道已删减的题目恢复吗？"):
             return 0
-        count = self.controller.restore_all_excluded()
+        count = self.controller.restore_all_excluded(force=self.force_replace)
         self.reload()
         return count
 

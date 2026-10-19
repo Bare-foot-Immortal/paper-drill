@@ -37,9 +37,13 @@ def run(initial_bank: "str | None" = None) -> int:
     if initial_bank:
         settings.bank_path = initial_bank
     controller = PaperDrillController(settings=settings)
-    window = MainWindow(controller, theme_mode=getattr(settings, "theme", "system") or "system")
+    window = MainWindow(controller, theme_mode=getattr(settings, "theme", "system") or "system",
+                        autoload=False)
     window.show()
     window.activateWindow()
+    # 先把首帧画出来再载入题库：窗口秒开，题库解析放到事件循环里做。
+    app.processEvents()
+    window.begin_startup_load()
     # 无论 QApplication 是不是本次创建（available() 探测时可能已创建），
     # 都必须进入事件循环，否则窗口一闪即退。
     return int(app.exec())

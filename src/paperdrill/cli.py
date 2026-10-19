@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import tempfile
 from pathlib import Path
 
 from . import __app_name__, __version__
@@ -39,7 +40,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--list-progress", action="store_true", help="列出各题库的练习进度摘要")
     p.add_argument("--show-progress-dir", action="store_true", help="打印进度文件目录")
     p.add_argument("--progress-dir", default="", help="覆盖进度目录（自动化验证用）")
-    p.add_argument("--practice", type=int, default=0,
+    p.add_argument("--practice", type=int, default=None,
                    help="无界面连续作答 N 题（自动化验证进度保留用）")
     p.add_argument("--mode", default="order", help="无界面练习的模式：order/random/wrong/fresh")
     p.add_argument("--single", type=int, default=20, help="试卷蓝图：每卷单选题数")
@@ -84,6 +85,18 @@ class _Tee:
                 pass
 
 
+def _print_bank_issues(result, limit: int = 10) -> None:
+    """打印题库解析坏行（帮助用户定位"为什么 0 题"）。"""
+    issues = list(getattr(result, "issues", []) or [])
+    if not issues:
+        return
+    print(f"[警告] 有 {len(issues)} 处内容未能导入：")
+    for issue in issues[:limit]:
+        print(f"       - {issue}")
+    if len(issues) > limit:
+        print(f"       - ...（其余 {len(issues) - limit} 条省略）")
+
+
 def _headless_practice(bank_path: str, count: int, mode: str) -> int:
     """无界面连续作答若干题（用于自动化验证练习进度是否跨进程保留）。"""
     from pathlib import Path
@@ -92,10 +105,15 @@ def _headless_practice(bank_path: str, count: int, mode: str) -> int:
 
     result = load_bank(bank_path)
     if not result.questions:
+        _print_bank_issues(result)
         print("[错误] 题库为空。")
         return 3
     store = ProgressStore.load_for(Path(bank_path).stem, result.questions)
-    session = PracticeSession(result.questions, store,
+    active = store.active_questions(result.questions)      # 与 GUI 一致：先扣掉题库删减
+    if not active:
+        print("[错误] 题库题目已被全部删减（可在图形界面「题库删减」中恢复）。")
+        return 3
+    session = PracticeSession(active, store,
                               mode=PracticeMode.from_label(mode), shuffle_options=True)
     restored = session.restore_position(adopt_mode=False)   # 只恢复位置，尊重 --mode
     before = session.stats()
@@ -119,8 +137,14 @@ def _headless_practice(bank_path: str, count: int, mode: str) -> int:
         answered += 1
         if not session.advance():
             break
-    session.save_position()
+    try:
+        session.save_position()
+    except Exception as exc:
+        print(f"[警告] 练习位置未能保存：{exc}")
 
+    if store.last_save_error:
+        print(f"[警告] 进度未能保存：{store.last_save_error}")
+        return 5
     stats = session.stats()
     print(f"[练习] 本次作答 {answered} 题；累计已练 {stats['done']}/{stats['total']}，"
           f"正确率 {stats['accuracy'] * 100:.1f}%，错题 {stats['wrong_book']} 道")
@@ -138,20 +162,26 @@ def _headless_paper(bank_path: str, args) -> int:
 
     result = load_bank(bank_path)
     if not result.questions:
+        _print_bank_issues(result)
         print("[错误] 题库为空。")
+        return 3
+    store = ProgressStore.load_for(Path(bank_path).stem, result.questions)
+    active = store.active_questions(result.questions)      # 与 GUI 一致：先扣掉题库删减
+    if not active:
+        print("[错误] 题库题目已被全部删减（可在图形界面「题库删减」中恢复）。")
         return 3
     bp = PaperBlueprint(args.single, args.multiple, args.judge)
     if bp.total <= 0:
         print("[错误] 每卷题目数量为 0。")
         return 2
-    stats = bank_stats(result.questions)
-    auto_n = min_round_length(result.questions, bp)
+    stats = bank_stats(active)
+    auto_n = min_round_length(active, bp)
     print(f"[蓝图] 每卷 {bp.total} 题（{bp.describe()}）")
     print(f"[轮长] 覆盖题库全部题目需 {auto_n} 张/轮"
           f"（题库：单选 {stats['single']}、多选 {stats['multiple']}、判断 {stats['judge']}）")
 
     n = args.round_length if args.round_length > 0 else auto_n
-    rnd = generate_round(result.questions, bp, round_length=n, seed=args.seed)
+    rnd = generate_round(active, bp, round_length=n, seed=args.seed)
     print(f"[生成] {rnd.summary()}　随机种子 {rnd.seed}")
     for key, (seen, total) in rnd.coverage.items():
         name = {"single": "单选", "multiple": "多选", "judge": "判断"}.get(key, key)
@@ -172,7 +202,6 @@ def _headless_paper(bank_path: str, args) -> int:
         print(f"[错误] 本轮没有 {label} 卷。")
         return 4
 
-    store = ProgressStore.load_for(Path(bank_path).stem, result.questions)
     exam = ExamSession(paper, store, shuffle_single=True, shuffle_multiple=True,
                        scores={"single": 1.0, "multiple": 2.0, "judge": 1.0})
     total = exam.total
@@ -192,9 +221,28 @@ def _headless_paper(bank_path: str, args) -> int:
     for data in res.per_type.values():
         print(f"       - {data['name']}：{data['correct']}/{data['total']}，"
               f"得分 {data['score']:g}/{data['full']:g}")
+    if store.last_save_error:
+        print(f"[警告] 成绩/进度未能保存：{store.last_save_error}")
+        return 5
     print(f"[成绩] 已保存，当前历史成绩 {len(store.exam_history())} 条；"
-          f"练习进度 已练 {store.stats(result.questions)['done']}/{stats['total']}")
+          f"练习进度 已练 {store.stats(active)['done']}/{stats['total']}")
     return 0
+
+
+def _validate_args(args) -> "tuple[int, str]":
+    """命令行参数校验；返回 ``(退出码, 错误文案)``，通过时退出码为 0。"""
+    for name in ("single", "multiple", "judge", "round_length"):
+        if int(getattr(args, name)) < 0:
+            return 2, f"--{name.replace('_', '-')} 不能为负数"
+    if args.practice is not None and args.practice <= 0:
+        return 2, "--practice 需要正整数（例如 --practice 10）"
+    if not (0.0 <= float(args.exam_ratio) <= 1.0):
+        return 2, "--exam-ratio 必须在 0~1 之间"
+    modes = [bool(args.practice is not None), bool(args.plan),
+             bool(args.exam), bool(args.stats_only)]
+    if sum(modes) > 1:
+        return 2, "--practice / --plan / --exam / --stats-only 不能同时使用"
+    return 0, ""
 
 
 def main(argv: "list[str] | None" = None) -> int:
@@ -211,6 +259,14 @@ def main(argv: "list[str] | None" = None) -> int:
         except Exception as exc:
             print(f"[警告] 无法写入日志文件：{exc}")
 
+    code, error = _validate_args(args)
+    if code:
+        print(f"[错误] {error}")
+        return code
+    if args.stats_only and not bank:
+        print("[错误] --stats-only 需要指定题库文件。")
+        return 2
+
     import paperdrill.store as store_mod
 
     if args.progress_dir:
@@ -219,6 +275,28 @@ def main(argv: "list[str] | None" = None) -> int:
         target = _Path(args.progress_dir)
         store_mod.progress_dir = lambda: target      # type: ignore[assignment]
 
+    try:
+        return _run(args, bank, store_mod)
+    except FileNotFoundError as exc:
+        print(f"[错误] {exc}")
+        return 2
+    except ValueError as exc:
+        print(f"[错误] {exc}")
+        return 2
+    except OSError as exc:
+        print(f"[错误] 文件读写失败：{exc}")
+        return 5
+    except Exception as exc:                         # 未知异常：给出可读提示 + 稳定退出码
+        from .paper import GenerationError
+
+        if isinstance(exc, GenerationError):
+            print(f"[错误] 无法生成试卷：{exc}")
+            return 4
+        print(f"[错误] 操作失败：{type(exc).__name__}: {exc}")
+        return 1
+
+
+def _run(args, bank: str, store_mod) -> int:
     if args.make_template:
         path = write_template_xlsx(args.make_template)
         print(f"[OK] 题库模板已生成：{path}")
@@ -247,7 +325,9 @@ def main(argv: "list[str] | None" = None) -> int:
             return 2
         from .gui import selftest
 
-        return selftest(bank, args.result, args.out, args.exercises, args.seed)
+        # 未给 --out 时用临时目录：自检绝不能写真实进度/题库库（审计 P2-8 同源）
+        out = args.out or tempfile.mkdtemp(prefix="pd_gui_selftest_")
+        return selftest(bank, args.result, out, args.exercises, args.seed)
 
     if args.qt_selftest:
         if not bank:
@@ -257,7 +337,7 @@ def main(argv: "list[str] | None" = None) -> int:
 
         return qt_selftest(bank, args.result, args.out, args.exercises, args.seed)
 
-    if args.practice and bank:
+    if args.practice is not None and bank:
         return _headless_practice(bank, args.practice, args.mode)
 
     if bank and (args.plan or args.exam):
@@ -269,12 +349,10 @@ def main(argv: "list[str] | None" = None) -> int:
         print(f"[题库] {bank}")
         print(f"       共 {stats['total']} 题：单选 {stats['single']}、多选 {stats['multiple']}、"
               f"判断 {stats['judge']}；含固定顺序题 {stats['fixed']} 道")
-        if result.issues:
-            print(f"[警告] 有 {len(result.issues)} 行未能导入：")
-            for issue in result.issues[:10]:
-                print(f"       - {issue}")
-            if len(result.issues) > 10:
-                print(f"       - ...（其余 {len(result.issues) - 10} 条省略）")
+        _print_bank_issues(result)
+        if not result.questions:
+            print("[错误] 没有解析到任何题目，请检查题库格式。")
+            return 3
         return 0
 
     print("请给出题库文件，或直接运行程序启动图形界面。使用 --help 查看参数。")

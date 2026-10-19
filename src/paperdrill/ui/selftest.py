@@ -102,12 +102,17 @@ def run_selftest(bank_path: str, result_path: str = "", progress_root: str = "",
         settings_file = progress_path / "settings.json"
 
         def make_app() -> "MainWindow":
+            from ..store import BankLibrary
+
             settings = AppSettings(bank_path="", mode="order", scope="all",
                                    shuffle_single=True, shuffle_multiple=True,
                                    auto_next_on_correct=False, show_analysis=True)
-            controller = PaperDrillController(settings=settings,
-                                              settings_path=settings_file,
-                                              progress_root=progress_path / "progress")
+            # 自检必须完全隔离：题库库也不能写真实 %APPDATA%\PaperDrill\library.json
+            controller = PaperDrillController(
+                settings=settings,
+                settings_path=settings_file,
+                progress_root=progress_path / "progress",
+                library=BankLibrary([], progress_path / "library.json"))
             window = MainWindow(controller, theme_mode="light", autoload=False)
             window.show()
             app.processEvents()

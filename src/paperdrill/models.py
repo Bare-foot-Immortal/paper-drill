@@ -10,10 +10,12 @@ import re
 import unicodedata
 from dataclasses import dataclass, field
 from enum import Enum
+from functools import lru_cache
 
 __all__ = [
     "QType", "Question", "Blueprint", "PaperItem", "Paper", "GenReport",
-    "AnswerParseError", "parse_answer", "normalize_text", "OPTION_LABELS",
+    "AnswerParseError", "parse_answer", "normalize_text", "normalize_display",
+    "OPTION_LABELS",
 ]
 
 OPTION_LABELS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -65,6 +67,21 @@ def normalize_text(text: object) -> str:
     return s.strip()
 
 
+def normalize_display(text: object) -> str:
+    """只整理空白，保留题库正文原貌（中文标点、㎡、① 等不被 NFKC 改写）。
+
+    解析/列头/答案比对仍使用 :func:`normalize_text`；题干、选项、解析等
+    "要展示给用户、并参与题目指纹"的内容使用本函数。
+    """
+    if text is None:
+        return ""
+    s = str(text)
+    s = s.replace("\u3000", " ").replace("\xa0", " ")
+    s = s.replace("\r\n", "\n").replace("\r", "\n")
+    s = re.sub(r"[ \t]+", " ", s)
+    return s.strip()
+
+
 def parse_qtype(raw: object) -> "QType | None":
     """把题库中的题型文本解析为标准题型；无法识别返回 None。"""
     if raw is None:
@@ -89,7 +106,11 @@ class AnswerParseError(ValueError):
 # ---------------------------------------------------------------- 答案解析
 _JUDGE_TRUE = {"正确", "对", "是", "√", "✓", "T", "TRUE", "Y", "YES", "A", "1", "V"}
 _JUDGE_FALSE = {"错误", "错", "否", "×", "x", "X", "F", "FALSE", "N", "NO", "B", "0", "-"}
-_FIXED_RE = re.compile(r"[（(]\s*定\s*[）)]|定")
+# 只有**带括号**的「（定）」才算固定顺序标记：直接匹配裸「定」会把
+# 「（稳定）」「（一定要）」这类答案正文误判成固定顺序题（审计 S8/P3-24）。
+_FIXED_RE = re.compile(r"[（(【\[]\s*定\s*[）)】\]]")
+# 选择题答案写成数字（1/2/3…）时按 A/B/C… 解释（与「选项1/选项2」列头一致）
+_NUMERIC_ANSWER_RE = re.compile(r"^\s*[1-8](?:\s*[、,，/\s]\s*[1-8])*\s*$")
 
 
 def parse_answer(qtype: QType, raw: object, option_count: int) -> tuple[list[str], "bool | None", bool]:
@@ -117,6 +138,9 @@ def parse_answer(qtype: QType, raw: object, option_count: int) -> tuple[list[str
         raise AnswerParseError(f"判断题答案无法识别：{text!r}（应为 正确/错误、对/错、√/×、T/F）")
 
     letters = re.findall(r"[A-Z]", text.upper())
+    if not letters and qtype in (QType.SINGLE, QType.MULTIPLE) and _NUMERIC_ANSWER_RE.match(text):
+        # 「答案：1」/「1、3」这类数字答案 → 按 A/B/C… 解释（与「选项1/选项2」列头对齐）
+        letters = [OPTION_LABELS[int(n) - 1] for n in re.findall(r"[1-8]", text)]
     if not letters:
         raise AnswerParseError(f"选择题答案无法识别：{text!r}（应为 A/B/C/D 等字母组合）")
     # 去重并保序
@@ -138,6 +162,14 @@ def parse_answer(qtype: QType, raw: object, option_count: int) -> tuple[list[str
 
 
 # ---------------------------------------------------------------- 数据模型
+@lru_cache(maxsize=8192)
+def _fingerprint_cached(stem: str, options: "tuple[str, ...]") -> str:
+    """题目指纹的缓存实现（键为原始题干与选项，可安全缓存）。"""
+    payload = (normalize_text(stem) + "\x1f"
+               + "\x1f".join(normalize_text(o) for o in options))
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:12]
+
+
 @dataclass
 class Question:
     """一道题目。"""
@@ -165,8 +197,17 @@ class Question:
 
     @property
     def fingerprint(self) -> str:
-        payload = self.stem + "\x1f" + "\x1f".join(self.options)
-        return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:12]
+        """题目内容指纹。
+
+        注意：v1.3.2 之前题库正文在导入时就被 NFKC 规范化；为了让"保留原文展示"
+        之后旧进度仍能命中，指纹始终对正文再做一次 :func:`normalize_text`
+        （NFKC 幂等），因此同一道题的新旧指纹一致。
+
+        计算走模块级缓存：界面刷新与进度统计会反复取指纹（300 题时一次刷新可达
+        数千次），而题库对象在导入后内容不再变化。缓存键是原始正文，题目被改写时
+        键随之变化，不会返回过期指纹。
+        """
+        return _fingerprint_cached(self.stem, tuple(self.options))
 
     def validate(self) -> list[str]:
         """返回问题列表（空列表表示合法）。"""

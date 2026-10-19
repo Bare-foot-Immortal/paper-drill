@@ -448,13 +448,20 @@ class PracticeSession:
                 self.rebuild(mode)
             else:
                 self._items.clear()
-        entry = self._position_entry(saved)
-        if entry is not None:                          # 新格式：按（模式, 范围）组合键记忆
+        raw_positions = saved.get("positions")
+        if isinstance(raw_positions, dict):
+            # 新格式：**只**认当前（模式, 范围）组合键的位置。
+            # 组合键没有记录时从头开始，绝不能回退到顶层字段——那属于上一个队列，
+            # 否则首次切到「只练单选 / 只练未做」会莫名停在第 3、第 6 题（审计 P2-4）。
+            entry = self._position_entry(saved)
+            if entry is None:
+                self.cursor = 0
+                return False
             for fp in self._saved_fingerprints(entry):
                 if self.goto_question_fp(fp):
                     return True
             return self._restore_by_pos(entry)
-        # 旧格式（无 positions 或没有当前组合键）→ 顶层字段，行为与旧版一致
+        # 旧格式（整个 positions 都缺失）→ 顶层字段，行为与旧版一致
         for fp in self._saved_fingerprints(saved):
             if self.goto_question_fp(fp):
                 return True
@@ -647,7 +654,7 @@ class ExamSession:
         return self.result
 
     def paper_blueprint_dict(self) -> dict:
-        bp = PaperBlueprint()
+        bp = PaperBlueprint(0, 0, 0)          # 从 0 开始计数，不能沿用默认 20/10/10
         for it in self.items:
             bp.set(it.qtype, bp.get(it.qtype) + 1)
         return bp.to_dict()

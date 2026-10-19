@@ -45,7 +45,7 @@ class ExamSetupPage(QWidget):
         self._syncing = False
         self._build()
         # 页面自己订阅控制器：这样它既能被 MainWindow 驱动，也能单独实例化使用/测试
-        self.controller.paper_changed.connect(self._on_controller_changed)
+        # 只订阅 state_changed（paper_changed 的变更同时会发 state_changed）
         self.controller.state_changed.connect(self._on_controller_changed)
         self.refresh(self.controller.state)
 
@@ -141,7 +141,7 @@ class ExamSetupPage(QWidget):
             spin.valueChanged.connect(self._on_score_changed)
         self.auto_radio.toggled.connect(self._on_round_mode_changed)
         self.round_spin.valueChanged.connect(self._on_round_length_changed)
-        self.generate_button.clicked.connect(lambda *_: self.controller.generate_round())
+        self.generate_button.clicked.connect(lambda *_: self._request_generate())
         self.start_button.clicked.connect(lambda *_: self._emit_start())
         link_clicked(self.next_unused_button, self.next_unused_requested)
         link_clicked(self.history_button, self.history_requested)
@@ -192,7 +192,6 @@ class ExamSetupPage(QWidget):
         self.controller.set_blueprint(self.single_spin.value(),
                                       self.multiple_spin.value(),
                                       self.judge_spin.value())
-        self.refresh(self.controller.state)
 
     def _on_score_changed(self, *_args) -> None:
         if self._syncing:
@@ -200,7 +199,6 @@ class ExamSetupPage(QWidget):
         self.controller.set_scores(self.score_single.value(),
                                    self.score_multiple.value(),
                                    self.score_judge.value())
-        self.refresh(self.controller.state)
 
     def _on_round_mode_changed(self, *_args) -> None:
         if self._syncing:
@@ -208,7 +206,6 @@ class ExamSetupPage(QWidget):
         auto = self.auto_radio.isChecked()
         self.round_spin.setEnabled(not auto)
         self.controller.set_round_length(self.round_spin.value(), auto)
-        self.refresh(self.controller.state)
 
     def _on_round_length_changed(self, value: int) -> None:
         if self._syncing or self.auto_radio.isChecked():
@@ -217,6 +214,19 @@ class ExamSetupPage(QWidget):
 
     def _emit_start(self) -> None:
         self.start_requested.emit(max(0, self.paper_combo.currentIndex()))
+
+    def _request_generate(self) -> None:
+        """生成一轮试卷；有未交卷考试时先确认（审计 F1）。"""
+        force = False
+        if self.controller.has_unsubmitted_exam():
+            from ..dialogs import confirm
+
+            force = confirm(
+                self, "放弃当前考试",
+                "当前有一场未交卷的模拟考试，重新生成试卷会丢弃已作答内容。\n确定继续吗？")
+            if not force:
+                return
+        self.controller.generate_round(force=force)
 
     def _on_row_selected(self, *_args) -> None:
         if self._syncing:

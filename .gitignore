@@ -2,7 +2,8 @@
 .venv/
 build/
 dist/
-*.spec
+# 注意：packaging/PaperDrill.spec 是源文件，必须纳入版本管理，不能忽略 *.spec
+paperdrill_ui/
 __pycache__/
 *.py[cod]
 .pytest_cache/

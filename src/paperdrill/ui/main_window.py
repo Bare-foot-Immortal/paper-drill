@@ -9,9 +9,10 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, QSize, Qt
+from PySide6.QtCore import QPoint, QSize, Qt, QTimer
 from PySide6.QtGui import QCursor, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QAbstractButton,
     QAbstractSpinBox,
     QApplication,
     QComboBox,
@@ -132,11 +133,7 @@ class MainWindow(QMainWindow):
 
         self.apply_theme(self.theme_mode)
         self.controller.state_changed.connect(self._sync_chrome)
-        self.controller.stats_changed.connect(self._sync_chrome)
         self.controller.status_message.connect(self.set_status)
-        self.controller.practice_changed.connect(self._refresh_practice)
-        self.controller.exam_changed.connect(self._refresh_exam)
-        self.controller.paper_changed.connect(self._refresh_exam)
         self.controller.library_changed.connect(self._refresh_library)
         self.controller.theme_requested.connect(self.apply_theme)
 
@@ -154,16 +151,44 @@ class MainWindow(QMainWindow):
             self.set_page(last_page, persist=False)
 
         if autoload:
-            pending = self.controller.settings.bank_path
-            if pending and Path(pending).is_file():
-                self.controller.load_bank(pending)
-            else:
-                recent = self.controller.recent_bank()
-                if recent:
-                    self.controller.load_bank(recent["path"])
-                elif pending:
-                    self.set_status(f"上次的题库已不存在：{pending}（文件 → 选择题库… 可重新指定）")
+            self._autoload_initial_bank()
         self._sync_chrome()
+
+    # ================================================================ 启动
+    def begin_startup_load(self) -> None:
+        """让窗口先上屏，再载入题库（启动速度优化）。
+
+        构造 MainWindow 要搭完三页控件，解析题库又要读文件，二者都放在
+        ``show()`` 之前时用户看到的是长时间无窗口。这里先显示窗口（首帧可见），
+        再用零延时定时器在事件循环里载入题库；总耗时不变，但感知启动明显更快。
+        """
+        if not self.controller.state.loaded:
+            self.practice_page.empty_state.set_text(
+                "正在载入题库…", "首次载入需要解析题库文件，请稍候。")
+            self.set_status("正在载入题库…")
+        QTimer.singleShot(0, self._startup_load_bank)
+
+    def _startup_load_bank(self) -> None:
+        QApplication.setOverrideCursor(QCursor(Qt.WaitCursor))
+        try:
+            self._autoload_initial_bank()
+        finally:
+            QApplication.restoreOverrideCursor()
+        if not self.controller.state.loaded:
+            self._refresh_practice()      # 复位「正在载入题库…」占位文案
+        self._sync_chrome()
+
+    def _autoload_initial_bank(self) -> None:
+        """按「上次题库 → 题库库最近一条仍存在」的顺序载入。"""
+        pending = self.controller.settings.bank_path
+        if pending and Path(pending).is_file():
+            self.controller.load_bank(pending)
+            return
+        recent = self.controller.recent_bank()
+        if recent:
+            self.controller.load_bank(recent["path"])
+        elif pending:
+            self.set_status(f"上次的题库已不存在：{pending}（文件 → 选择题库… 可重新指定）")
 
     # ================================================================ 构建
     def _build_ui(self) -> None:
@@ -351,7 +376,7 @@ class MainWindow(QMainWindow):
         self._action(m_prac, "进度管理…", self._show_progress_manager, "Ctrl+P")
 
         m_exam = self.menuBar().addMenu("模拟考试")
-        self._action(m_exam, "生成一轮试卷", self.controller.generate_round, "F5")
+        self._action(m_exam, "生成一轮试卷", self._generate_round, "F5")
         self._action(m_exam, "开始/继续模拟考试", self._start_exam_selected)
         self._action(m_exam, "交卷", self._submit_exam, "F9")
         m_exam.addSeparator()
@@ -405,6 +430,21 @@ class MainWindow(QMainWindow):
             return True
         return not isinstance(widget, _INPUT_TYPES)
 
+    def _focused_button(self):
+        """当前获得焦点的按钮（Enter 应激活它，而不是被全局快捷键吞掉）。"""
+        widget = QApplication.focusWidget()
+        if widget is not None and isinstance(widget, QAbstractButton) \
+                and widget.isEnabled():
+            return widget
+        return None
+
+    def _activate_focused_button(self) -> bool:
+        button = self._focused_button()
+        if button is None:
+            return False
+        button.click()
+        return True
+
     def _select_index(self, index: int) -> None:
         if index < 0 or not self._shortcut_target_ok():
             return
@@ -422,6 +462,8 @@ class MainWindow(QMainWindow):
 
     def _on_enter(self) -> None:
         if not self._shortcut_target_ok():
+            return
+        if self._activate_focused_button():
             return
         page = self.current_page()
         if page == "practice":
@@ -514,6 +556,8 @@ class MainWindow(QMainWindow):
             return
         index = PAGES.index(key)
         self.stack.setCurrentIndex(index)
+        if key != "practice":
+            self.controller.cancel_auto_next()      # 离开练习页后不再"后台自动跳题"（P3-6）
         for name, button in self.nav_buttons.items():
             active = name == key
             button.setProperty("active", active)
@@ -566,14 +610,30 @@ class MainWindow(QMainWindow):
         if paper is None:
             notify(self, "提示", "请先在「模拟考试」页生成一轮试卷。")
             return
-        self.controller.start_exam(paper)
+        if self.controller.has_unsubmitted_exam() and not confirm(
+                self, "放弃当前考试",
+                "当前有一场未交卷的模拟考试，重新开始会丢弃已作答内容。\n确定继续吗？"):
+            return
+        self.controller.start_exam(paper, allow_replace=True)
 
     def _start_exam_selected(self) -> None:
         self._start_exam_at(self.exam_setup_page.selected_index())
 
     def _start_next_unused(self) -> None:
         self.set_page("exam")
-        self.controller.start_next_unused_paper()
+        if self.controller.has_unsubmitted_exam() and not confirm(
+                self, "放弃当前考试",
+                "当前有一场未交卷的模拟考试，切换到下一张卷会丢弃已作答内容。\n确定继续吗？"):
+            return
+        self.controller.start_next_unused_paper(allow_replace=True)
+
+    def _generate_round(self) -> None:
+        """生成一轮试卷：考试进行中先确认（F5 / 菜单入口）。"""
+        if self.controller.has_unsubmitted_exam() and not confirm(
+                self, "放弃当前考试",
+                "当前有一场未交卷的模拟考试，重新生成试卷会丢弃已作答内容。\n确定继续吗？"):
+            return
+        self.controller.generate_round(force=True)
 
     def _exam_in_progress(self) -> bool:
         """当前是否有一场「未交卷且正在作答视图」的考试。
@@ -587,11 +647,17 @@ class MainWindow(QMainWindow):
         return state.exam_view == "taking" or self.current_page() == "exam"
 
     def _submit_exam(self) -> None:
+        if not self._shortcut_target_ok():
+            return
         state = self.controller.state
         if state.exam is not None and state.exam.submitted:
             self._show_exam_view("result")
             return
-        if not self._exam_in_progress():
+        # 交卷只允许在「模拟考试页的作答视图」触发：在练习页按 F9 不应直接把考试交掉（审计 P3-2）
+        if state.exam_view != "taking" or self.current_page() != "exam":
+            notify(self, "提示", "请先回到「模拟考试」页的作答界面再交卷。")
+            return
+        if state.exam is None:
             notify(self, "提示", "当前没有进行中的模拟考试。")
             return
         self.set_page("exam")
@@ -781,6 +847,7 @@ class MainWindow(QMainWindow):
     # ================================================================ 主题
     def apply_theme(self, mode: str) -> None:
         self.theme_mode = mode if mode in theme_module.THEME_MODES else "system"
+        previous = self.theme
         app = QApplication.instance()
         if app is not None:
             self.theme = theme_module.apply_theme(app, self.theme_mode)
@@ -793,9 +860,17 @@ class MainWindow(QMainWindow):
             self.theme_combo.blockSignals(True)
             self.theme_combo.setCurrentIndex(index)
             self.theme_combo.blockSignals(False)
+        # 主题未变时不重排页面：启动时窗口已用同一主题构造，重复刷新纯属浪费
+        if previous is self.theme:
+            return
         for page in (self.practice_page, self.exam_setup_page, self.exam_run_page,
                      self.exam_result_page, self.library_page):
             page.apply_theme(self.theme)
+        # 顶栏胶囊与保存错误标签不属于任何页面，必须单独跟随主题（审计 P3-4）
+        for pill in (self.pill_done, self.pill_rate, self.pill_book):
+            pill.restyle(self.theme)
+        self.save_error_label.setStyleSheet(
+            f"color:{self.theme.danger};font-weight:700;background:transparent;")
 
     # ================================================================ 拖放
     def dragEnterEvent(self, event) -> None:  # noqa: N802
@@ -846,6 +921,13 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:  # noqa: N802
         try:
             state = self.controller.state
+            if (self.controller.has_unsubmitted_exam()
+                    and os.environ.get("QT_QPA_PLATFORM") != "offscreen"):
+                if not confirm(self, "未交卷的模拟考试",
+                               "当前有一场未交卷的模拟考试，关闭窗口会丢失全部作答。\n"
+                               "确定关闭吗？"):
+                    event.ignore()
+                    return
             if state.session and not state.session.empty:
                 state.session.save_position()
             self.controller.save_window_state(self.window_geometry_text, self.current_page())

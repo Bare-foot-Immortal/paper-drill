@@ -693,9 +693,22 @@ def _build_palette(theme: Theme) -> QPalette:
     return pal
 
 
-def apply_theme(app, mode: str = "system") -> Theme:
-    """把主题应用到 ``QApplication``，返回实际生效的主题对象。"""
+def apply_theme(app, mode: str = "system", *, force: bool = False) -> Theme:
+    """把主题应用到 ``QApplication``，返回实际生效的主题对象。
+
+    若该主题已经是当前生效主题（``app`` 上的 ``paperdrill_theme`` 属性），
+    默认直接返回、不重设整窗 QSS：设置 QSS 会让已有控件全部重新 polish，
+    700+ 控件时实测约 0.2 s。启动路径由 ``create_application`` 先应用一次主题，
+    主窗口构造时再调用一次，重复应用正是启动耗时里白白丢掉的一段。
+    需要强制重建（例如主题令牌被外部改动）时传 ``force=True``。
+    """
     theme = theme_for(mode)
+    if not force:
+        try:
+            if app.property("paperdrill_theme") == theme.name:
+                return theme
+        except Exception:
+            pass
     try:
         app.setStyleSheet(build_stylesheet(theme))
         app.setPalette(_build_palette(theme))

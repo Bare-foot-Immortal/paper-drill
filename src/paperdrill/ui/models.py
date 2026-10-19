@@ -169,7 +169,7 @@ def _exam_history_columns() -> list[Column]:
         Column("正确", lambda r: r.get("correct", 0), 64, Qt.AlignCenter),
         Column("错误", lambda r: r.get("wrong", 0), 64, Qt.AlignCenter),
         Column("未答", lambda r: r.get("unanswered", 0), 64, Qt.AlignCenter),
-        Column("正确率", lambda r: f"{float(r.get('accuracy', 0) or 0) * 100:.1f}%", 84,
+        Column("正确率", lambda r: f"{_num(r.get('accuracy', 0)) * 100:.1f}%", 84,
                Qt.AlignCenter),
     ]
 

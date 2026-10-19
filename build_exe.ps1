@@ -1,23 +1,27 @@
 ﻿# ============================================================
 #  刷题匠 PaperDrill —— 一键打包脚本
-#  用法： powershell -ExecutionPolicy Bypass -File build_exe.ps1
+#  用法： powershell -ExecutionPolicy Bypass -File build_exe.ps1 [-Portable]
 #  产物： dist\PaperDrill.exe （单文件、免安装、可直接分享）
+#         -Portable 时另外产出 dist\PaperDrill-Portable\（文件夹版：
+#         启动最快，但必须整个文件夹一起复制/分发）
 #
-#  v1.3.0 变更：界面改为 Qt（PySide6）。打包时收集 Qt 插件，
-#  并在产物上跑一次 --qt-selftest 冒烟验证（用 -SkipSmoke 跳过）。
+#  v1.3.3 变更：改用 packaging\PaperDrill.spec 打包，不再 --collect-all PySide6。
+#  Qt 载荷按实际用到的模块收集，exe 从 98.8 MB 降到约 40 MB；
+#  实测窗口就绪：单文件 4.4–5.6 s → 1.8–2.3 s；文件夹版约 1.0–1.3 s。
 #
 #  可选参数：
 #    -SkipTests     跳过测试套件
 #    -SkipSmoke     跳过产物冒烟自检
 #    -NoClean       不清理 PyInstaller 缓存
-#    -OutDir DIR    指定产物目录（默认 dist）。当 dist\PaperDrill.exe 正在运行时，
-#                   可先打包到别处（如 -OutDir build\dist_new），关闭程序后再替换。
+#    -OutDir DIR    指定产物目录（默认 dist）
+#    -Portable      额外构建文件夹版（dist\PaperDrill-Portable）
 # ============================================================
 param(
     [switch]$SkipTests,
     [switch]$SkipSmoke,
     [switch]$NoClean,
-    [string]$OutDir = 'dist'
+    [string]$OutDir = 'dist',
+    [switch]$Portable
 )
 
 $ErrorActionPreference = 'Stop'
@@ -44,23 +48,30 @@ if (-not $SkipTests) {
     & $py -m unittest discover -s tests
     if ($LASTEXITCODE -ne 0) { Pop-Location; throw "测试未通过，已中止打包。" }
     Pop-Location
+    Remove-Item Env:\QT_QPA_PLATFORM -ErrorAction SilentlyContinue
 } else {
     Write-Host "[3/5] 跳过测试（-SkipTests）" -ForegroundColor Yellow
 }
 
-Write-Host "[4/5] PyInstaller 打包 ..." -ForegroundColor Cyan
-
+# ---------------------------------------------------------------- 打包
 $distDir = Join-Path $root $OutDir
 New-Item -ItemType Directory -Path $distDir -Force | Out-Null
-
-# 打包前检查：目标 exe 被正在运行的进程占用会导致 WinError 5
 $targetExe = Join-Path $distDir 'PaperDrill.exe'
+$portableDir = Join-Path $distDir 'PaperDrill-Portable'
+$portableExe = Join-Path $portableDir 'PaperDrill.exe'
+$spec = Join-Path $root 'packaging\PaperDrill.spec'
+
+# 打包前检查：目标产物被正在运行的进程占用会导致 WinError 5
 $running = Get-Process -Name PaperDrill -ErrorAction SilentlyContinue
-if ($running -and (Test-Path $targetExe)) {
+if ($running) {
     $holders = @()
     foreach ($proc in $running) {
         try {
-            if ($proc.Path -and ($proc.Path -eq $targetExe)) { $holders += $proc.Id }
+            $path = $proc.Path
+            if ($path -and (($path -ieq $targetExe) -or
+                            ($portableDir -and $path.StartsWith($portableDir, [StringComparison]::OrdinalIgnoreCase)))) {
+                $holders += $proc.Id
+            }
         } catch { }
     }
     if ($holders.Count -gt 0) {
@@ -70,106 +81,104 @@ if ($running -and (Test-Path $targetExe)) {
 }
 if (Test-Path $targetExe) { Remove-Item $targetExe -Force }
 
-$icon = Join-Path $root 'assets\PaperDrill.ico'
-$pyArgs = @(
-    '-m', 'PyInstaller',
-    '--noconfirm',
-    '--onefile',
-    '--windowed',
-    '--name', 'PaperDrill',
-    '--paths', (Join-Path $root 'src'),
-    '--distpath', $distDir,
-    '--workpath', (Join-Path $root 'build'),
-    '--specpath', (Join-Path $root 'build'),
-    '--version-file', (Join-Path $root 'packaging\version_info.txt'),
-    '--hidden-import', 'openpyxl',
-    '--collect-submodules', 'openpyxl',
-    '--hidden-import', 'docx',
-    '--collect-submodules', 'docx',
-    '--collect-data', 'docx',
-    '--hidden-import', 'pypdf',
-    '--collect-submodules', 'pypdf',
-    # ---- Qt 界面（v1.3.0）：插件（platforms/styles/imageformats）必须一起收进来，
-    #      否则 exe 启动会报 "could not find or load the Qt platform plugin windows"
-    '--collect-all', 'PySide6',
-    '--hidden-import', 'paperdrill.ui',
-    '--hidden-import', 'paperdrill.ui.application',
-    '--hidden-import', 'paperdrill.ui.controller',
-    '--hidden-import', 'paperdrill.ui.dialogs',
-    '--hidden-import', 'paperdrill.ui.main_window',
-    '--hidden-import', 'paperdrill.ui.models',
-    '--hidden-import', 'paperdrill.ui.selftest',
-    '--hidden-import', 'paperdrill.ui.theme',
-    '--hidden-import', 'paperdrill.ui.widgets',
-    '--hidden-import', 'paperdrill.ui.pages.practice',
-    '--hidden-import', 'paperdrill.ui.pages.exam',
-    '--hidden-import', 'paperdrill.ui.pages.exam_run',
-    '--hidden-import', 'paperdrill.ui.pages.result',
-    '--hidden-import', 'paperdrill.ui.pages.library',
-    '--exclude-module', 'numpy',
-    '--exclude-module', 'pandas',
-    '--exclude-module', 'matplotlib',
-    '--exclude-module', 'scipy',
-    '--exclude-module', 'PIL',
-    '--exclude-module', 'IPython',
-    '--exclude-module', 'pytest',
-    '--exclude-module', 'setuptools',
-    '--exclude-module', 'pip',
-    # 未使用的 Qt 子模块（显著减小体积）
-    '--exclude-module', 'PySide6.QtWebEngineCore',
-    '--exclude-module', 'PySide6.QtWebEngineWidgets',
-    '--exclude-module', 'PySide6.QtWebEngineQuick',
-    '--exclude-module', 'PySide6.QtQml',
-    '--exclude-module', 'PySide6.QtQuick',
-    '--exclude-module', 'PySide6.QtQuickWidgets',
-    '--exclude-module', 'PySide6.Qt3DCore',
-    '--exclude-module', 'PySide6.QtMultimedia',
-    '--exclude-module', 'PySide6.QtCharts',
-    '--exclude-module', 'PySide6.QtDataVisualization',
-    '--exclude-module', 'PySide6.QtPdf',
-    '--exclude-module', 'PySide6.QtSql',
-    '--exclude-module', 'PySide6.QtNetwork',
-    '--exclude-module', 'PySide6.QtDesigner'
-)
+Write-Host "[4/5] PyInstaller 打包（单文件）..." -ForegroundColor Cyan
+$onefileWork = Join-Path $root 'build\pyi-onefile'
+$pyArgs = @('-m', 'PyInstaller', $spec, '--noconfirm',
+            '--distpath', $distDir, '--workpath', $onefileWork)
 if (-not $NoClean) { $pyArgs += '--clean' }
-if (Test-Path $icon) {
-    # 同时嵌入 exe 文件图标与运行时窗口/任务栏图标（application.app_icon_path 从 _MEIPASS/assets 读取）
-    $pyArgs += @('--icon', $icon, '--add-data', "$icon;assets")
+$env:PAPERDRILL_BUILD_MODE = 'onefile'
+try {
+    & $py @pyArgs
+    if ($LASTEXITCODE -ne 0) { throw "PyInstaller 打包（单文件）失败。" }
+} finally {
+    Remove-Item Env:\PAPERDRILL_BUILD_MODE -ErrorAction SilentlyContinue
 }
-$pyArgs += (Join-Path $root 'launcher.py')
 
-& $py @pyArgs
-if ($LASTEXITCODE -ne 0) { throw "PyInstaller 打包失败。" }
+if ($Portable) {
+    Write-Host "[4/5] PyInstaller 打包（文件夹版，启动更快）..." -ForegroundColor Cyan
+    $onedirWork = Join-Path $root 'build\pyi-onedir'
+    $tmpDist = Join-Path $root 'build\portable-dist'
+    Remove-Item $tmpDist -Recurse -Force -ErrorAction SilentlyContinue
+    $pyArgs = @('-m', 'PyInstaller', $spec, '--noconfirm',
+                '--distpath', $tmpDist, '--workpath', $onedirWork)
+    if (-not $NoClean) { $pyArgs += '--clean' }
+    $env:PAPERDRILL_BUILD_MODE = 'onedir'
+    try {
+        & $py @pyArgs
+        if ($LASTEXITCODE -ne 0) { throw "PyInstaller 打包（文件夹版）失败。" }
+    } finally {
+        Remove-Item Env:\PAPERDRILL_BUILD_MODE -ErrorAction SilentlyContinue
+    }
+    if (-not (Test-Path (Join-Path $tmpDist 'PaperDrill\PaperDrill.exe'))) {
+        throw "未找到文件夹版产物：$tmpDist\PaperDrill\PaperDrill.exe"
+    }
+    Remove-Item $portableDir -Recurse -Force -ErrorAction SilentlyContinue
+    Move-Item (Join-Path $tmpDist 'PaperDrill') $portableDir
+    Remove-Item $tmpDist -Recurse -Force -ErrorAction SilentlyContinue
+}
 
+# ---------------------------------------------------------------- 校验
 Write-Host "[5/5] 校验产物 ..." -ForegroundColor Cyan
-$exe = Join-Path $distDir 'PaperDrill.exe'
-if (-not (Test-Path $exe)) { throw "未找到产物 $exe" }
-$size = [math]::Round((Get-Item $exe).Length / 1MB, 1)
+if (-not (Test-Path $targetExe)) { throw "未找到产物 $targetExe" }
+$smokeTargets = @($targetExe)
+if ($Portable) {
+    if (-not (Test-Path $portableExe)) { throw "未找到文件夹版产物 $portableExe" }
+    $smokeTargets += $portableExe
+}
 
 if (-not $SkipSmoke) {
     # 用打包产物跑一次 Qt 界面无头自检：能抓到漏收的 Qt 插件与业务回归
     $fixture = Join-Path $root 'fixtures\样例题库.xlsx'
     if (Test-Path $fixture) {
-        Write-Host "      冒烟自检（Qt 界面）："
-        $smokeOut = Join-Path $env:TEMP ('pd_smoke_' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
-        New-Item -ItemType Directory -Path $smokeOut -Force | Out-Null
         $env:QT_QPA_PLATFORM = 'offscreen'
-        & $exe --qt-selftest --bank $fixture --out (Join-Path $smokeOut 'progress') --result (Join-Path $smokeOut 'result.json')
-        $code = $LASTEXITCODE
-        Remove-Item Env:\QT_QPA_PLATFORM -ErrorAction SilentlyContinue
-        if ($code -ne 0) {
-            Write-Host "[中止] 冒烟自检未通过（退出码 $code），详见 $(Join-Path $smokeOut 'result.json')" -ForegroundColor Red
-            throw "产物冒烟自检失败。"
+        try {
+            foreach ($exe in $smokeTargets) {
+                $label = Split-Path $exe -Leaf
+                if ($exe -ne $targetExe) { $label = "文件夹版 " + (Split-Path (Split-Path $exe -Parent) -Leaf) }
+                Write-Host "      冒烟自检（$label）："
+                $smokeOut = Join-Path $env:TEMP ('pd_smoke_' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
+                New-Item -ItemType Directory -Path $smokeOut -Force | Out-Null
+                $resultFile = Join-Path $smokeOut 'result.json'
+                # GUI 子系统的 exe 必须用 Start-Process -Wait：用 & 调用是异步的，
+                # 会在 result.json 写出来之前就去读它（v1.3.3 打包脚本踩过这个坑）。
+                $proc = Start-Process -FilePath $exe -Wait -PassThru -ArgumentList @(
+                    '--qt-selftest', '--bank', $fixture,
+                    '--out', (Join-Path $smokeOut 'progress'), '--result', $resultFile)
+                $code = $proc.ExitCode
+                if ($code -ne 0) {
+                    Write-Host "[中止] 冒烟自检未通过（退出码 $code），详见 $resultFile" -ForegroundColor Red
+                    throw "产物冒烟自检失败：$exe"
+                }
+                if (-not (Test-Path $resultFile)) {
+                    Write-Host "[中止] 冒烟自检未生成结果文件：$resultFile" -ForegroundColor Red
+                    throw "产物冒烟自检结果缺失：$exe"
+                }
+                try {
+                    $smoke = Get-Content $resultFile -Raw -Encoding UTF8 | ConvertFrom-Json
+                    if (-not $smoke.ok) { throw "result.json ok=false" }
+                } catch {
+                    Write-Host "[中止] 冒烟自检结果异常：$_" -ForegroundColor Red
+                    throw "产物冒烟自检结果异常：$exe"
+                }
+                Write-Host "      冒烟自检通过 ✔（版本 $($smoke.version)）" -ForegroundColor Green
+            }
+        } finally {
+            Remove-Item Env:\QT_QPA_PLATFORM -ErrorAction SilentlyContinue
         }
-        Write-Host "      冒烟自检通过 ✔" -ForegroundColor Green
     } else {
         Write-Host "      [跳过] 未找到 fixtures\样例题库.xlsx" -ForegroundColor Yellow
     }
 }
 
+$size = [math]::Round((Get-Item $targetExe).Length / 1MB, 1)
 Write-Host ""
 Write-Host "打包完成 ✔" -ForegroundColor Green
-Write-Host "  产物：$exe"
-Write-Host "  体积：$size MB（Qt 运行库已内含，比 v1.2 的 tkinter 版大属正常）"
-Write-Host "  分发：直接复制该 exe 到任意 Windows 10/11 x64 机器即可运行（免安装、免联网）"
+Write-Host "  单文件：$targetExe"
+Write-Host "  体积：$size MB（Qt 运行库已内含）"
+if ($Portable) {
+    $portableSize = [math]::Round(
+        ((Get-ChildItem $portableDir -Recurse -File | Measure-Object Length -Sum).Sum) / 1MB, 1)
+    Write-Host "  文件夹版：$portableDir（$portableSize MB，启动最快，需整目录分发）"
+}
+Write-Host "  分发：单文件可直接复制到任意 Windows 10/11 x64 机器运行（免安装、免联网）"
 Write-Host "  说明：练习进度保存在 %APPDATA%\PaperDrill\progress\"

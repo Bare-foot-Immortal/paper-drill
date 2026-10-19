@@ -34,8 +34,10 @@ class ExamResultPage(QWidget):
         super().__init__(parent)
         self.controller = controller
         self.theme = theme
+        self._last_result = None
+        self._last_row = -1
+        self._last_analysis = ""
         self._build()
-        self.controller.exam_changed.connect(self._on_controller_changed)
         self.controller.state_changed.connect(self._on_controller_changed)
         self.refresh(self.controller.state)
 
@@ -124,7 +126,9 @@ class ExamResultPage(QWidget):
             return
         detail = self.detail_model.detail_at(rows[0].row())
         if detail:
-            self.analysis_box.setPlainText(self._analysis_of(detail))
+            self._last_row = rows[0].row()
+            self._last_analysis = self._analysis_of(detail)
+            self.analysis_box.setPlainText(self._last_analysis)
 
     @staticmethod
     def _analysis_of(detail: dict) -> str:
@@ -181,8 +185,16 @@ class ExamResultPage(QWidget):
             label.setText(f"{data['correct']}/{data['total']} 题　"
                           f"{data['score']:g}/{data['full']:g} 分")
 
-        self.detail_model.set_rows(result.details)
-        self.analysis_box.setPlainText("（点击左侧任意一行查看该题的题干与解析）")
+        if result is not self._last_result:
+            # 只有成绩对象本身变了才重建明细；否则保留选中行与右侧解析（审计 P3-7）
+            self._last_result = result
+            self._last_row = -1
+            self._last_analysis = ""
+            self.detail_model.set_rows(result.details)
+            self.analysis_box.setPlainText("（点击左侧任意一行查看该题的题干与解析）")
+        elif 0 <= self._last_row < self.detail_model.rowCount():
+            self.detail_table.selectRow(self._last_row)
+            self.analysis_box.setPlainText(self._last_analysis)
 
     def apply_theme(self, theme: Theme) -> None:
         self.theme = theme

@@ -35,7 +35,7 @@ def _as_int(value: object, default: int = 0) -> int:
     """把任意值安全转为 int（进度文件被人为编辑/损坏时不让整个加载失败）。"""
     try:
         return int(value)          # type: ignore[arg-type]
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
 SCHEMA_VERSION = 2
 
@@ -78,6 +78,9 @@ class QRecord:
     last: str = ""          # "right" / "wrong" / ""
     streak: int = 0         # 连续答对次数
     ts: str = ""
+    # 「清空错题本」只把题目移出错题本，不篡改"最近一次作答结果"（审计 P3-06）。
+    # 旧进度文件没有该字段 → 默认 False，行为与旧版一致。
+    wrong_cleared: bool = False
 
     @property
     def done(self) -> bool:
@@ -89,8 +92,8 @@ class QRecord:
 
     @property
     def in_wrong_book(self) -> bool:
-        """最近一次作答为错误 → 在错题本中；答对后自动移出。"""
-        return self.done and self.last == "wrong"
+        """最近一次作答为错误、且未被「清空错题本」移出 → 在错题本中。"""
+        return self.done and self.last == "wrong" and not self.wrong_cleared
 
     @property
     def mastered(self) -> bool:
@@ -105,17 +108,20 @@ class QRecord:
             self.wrong += 1
             self.streak = 0
             self.last = "wrong"
+        self.wrong_cleared = False
         self.ts = _now()
 
     def to_dict(self) -> dict:
         return {"right": self.right, "wrong": self.wrong, "last": self.last,
-                "streak": self.streak, "ts": self.ts}
+                "streak": self.streak, "ts": self.ts,
+                "wrong_cleared": bool(self.wrong_cleared)}
 
     @classmethod
     def from_dict(cls, data: dict) -> "QRecord":
         return cls(right=_as_int(data.get("right"), 0), wrong=_as_int(data.get("wrong"), 0),
                    last=str(data.get("last", "") or ""), streak=_as_int(data.get("streak"), 0),
-                   ts=str(data.get("ts", "") or ""))
+                   ts=str(data.get("ts", "") or ""),
+                   wrong_cleared=bool(data.get("wrong_cleared", False)))
 
 
 @dataclass
@@ -166,12 +172,12 @@ class BankProgress:
         return rec
 
     def clear_wrong_book(self, questions: Sequence[Question]) -> int:
-        """清空错题标记（保留历史统计），返回清理条数。"""
+        """清空错题标记（保留历史统计与"最近一次作答结果"），返回清理条数。"""
         count = 0
         for q in questions:
             rec = self.records.get(q.fingerprint)
             if rec is not None and rec.in_wrong_book:
-                rec.last = "right" if rec.right > 0 else ""
+                rec.wrong_cleared = True
                 count += 1
         self.updated = _now()
         return count
@@ -321,6 +327,16 @@ class ProgressStore:
         self.progress = bank
         self.dir = Path(directory) if directory else progress_dir()
         self.last_save_error = ""      # 非空表示最近一次落盘失败（界面据此提示用户）
+        # 上次成功落盘时文件里的 updated/文件指纹：用于检测"另一个进程改过文件"并合并写入
+        self._disk_updated = str(getattr(bank, "updated", "") or "")
+        self._disk_stat = self._stat_target()
+
+    def _stat_target(self) -> "tuple[int, int] | None":
+        try:
+            st = self.path.stat()
+            return (int(st.st_mtime_ns), int(st.st_size))
+        except OSError:
+            return None
 
     # ------------------------------------------------------------ 属性
     @property
@@ -344,7 +360,16 @@ class ProgressStore:
         exact = directory / f"{key}.json"
         if exact.exists():
             data = _read_json(exact)
-            if data:
+            if data is None:
+                # 文件损坏/编码异常：先备份，避免随后写入空进度把可恢复内容覆盖掉
+                try:
+                    backup = exact.with_name(
+                        f"{exact.name}.bad-{time.strftime('%Y%m%d%H%M%S')}")
+                    if not backup.exists():
+                        exact.replace(backup)
+                except OSError:
+                    pass
+            elif isinstance(data, dict):
                 try:
                     prog = BankProgress.from_dict(data)
                 except Exception:                      # 极端损坏 → 按无进度处理
@@ -353,7 +378,22 @@ class ProgressStore:
                     prog.bank_key = key
                     prog.bank_name = prog.bank_name or bank_name
                     prog.question_total = len(questions)
-                    prog.inherited_from = ""
+                    prog.prune(questions)
+                    # 改名往返/连续改名：同内容可能留下多份文件，选"更新/更全"的进度合并，
+                    # 避免改回旧文件名后看到更少的记录（审计 P2-04）。
+                    src = cls._find_inheritable(directory, questions)
+                    if (src is not None and src[0].resolve() != exact.resolve()
+                            and getattr(src[1], "inherited_from", "") == exact.name):
+                        # 只合并"由当前文件改名/继承而来"的兄弟文件；同内容的不同题库
+                        # （例如 A库/B库 题目相同）绝不能互相污染（保持多题库隔离）。
+                        other = src[1]
+                        richness = lambda p: (  # noqa: E731 - 局部排序键，保持可读
+                            str(p.updated or ""),
+                            sum(r.attempts for r in p.records.values()),
+                            len(p.records))
+                        if richness(other) > richness(prog):
+                            cls._merge_progress(prog, other)
+                            prog.prune(questions)
                     return cls(prog, directory)
         # 内容继承
         inherited = cls._find_inheritable(directory, questions)
@@ -366,11 +406,38 @@ class ProgressStore:
             # 题库删减同样跟随题库内容继承（只保留在新题库中仍能命中的指纹）
             alive = {q.fingerprint for q in questions}
             prog.excluded = {fp: info for fp, info in prog.excluded.items() if fp in alive}
+            # 只保留当前题库还能命中的记录，避免"1 题新库继承 30 条幽灵记录"（P2-06）
+            prog.prune(questions)
             store = cls(prog, directory)
             store.save()                      # 立即另存为新标识，旧文件保留
             return store
         return cls(BankProgress(bank_key=key, bank_name=bank_name,
                                 question_total=len(questions), created=_now()), directory)
+
+    @staticmethod
+    def _merge_progress(base: BankProgress, other: BankProgress) -> None:
+        """把 ``other`` 里的记录/删减/成绩并入 ``base``（同一指纹取 ts 更新者）。"""
+        for fp, rec in other.records.items():
+            current = base.records.get(fp)
+            if current is None:
+                base.records[fp] = QRecord.from_dict(rec.to_dict())
+            elif (rec.ts or "") > (current.ts or "") or (
+                    rec.ts == current.ts and rec.attempts > current.attempts):
+                base.records[fp] = QRecord.from_dict(rec.to_dict())
+        base.excluded.update(other.excluded)
+        seen = {str(e.get("ts", "")) + str(e.get("paper_label", "")) for e in base.exams}
+        for exam in other.exams:
+            key = str(exam.get("ts", "")) + str(exam.get("paper_label", ""))
+            if key not in seen:
+                base.exams.append(dict(exam))
+                seen.add(key)
+        base.exams.sort(key=lambda e: str(e.get("ts", "")))
+        if len(base.exams) > 30:
+            del base.exams[:-30]
+        if (other.updated or "") > (base.updated or ""):
+            base.updated = other.updated
+            if other.session:
+                base.session = dict(other.session)
 
     @staticmethod
     def _find_inheritable(directory: Path, questions: Sequence[Question]):
@@ -381,7 +448,7 @@ class ProgressStore:
             return None
         for path in sorted(directory.glob("*.json")):
             data = _read_json(path)
-            if not data:
+            if not isinstance(data, dict):
                 continue
             try:
                 prog = BankProgress.from_dict(data)
@@ -393,8 +460,12 @@ class ProgressStore:
             # 分母取"旧记录数 / 新题库题数"中较小者：题库删题或扩题时都能正确判定为同一题库
             denominator = max(1, min(len(prog.records), len(fps)))
             overlap = common / denominator
-            if overlap >= INHERIT_THRESHOLD and (best is None or overlap > best[0]):
-                best = (overlap, path, prog)
+            if overlap < INHERIT_THRESHOLD:
+                continue
+            # 重合度相同时取 updated 更新、作答次数更多的文件（审计 P2-04）
+            score = (overlap, str(prog.updated or ""), sum(r.attempts for r in prog.records.values()))
+            if best is None or score > best[0]:
+                best = (score, path, prog)
         if best is None:
             return None
         return best[1], best[2]
@@ -422,12 +493,10 @@ class ProgressStore:
             self.progress.apply_answer(question, correct)
         self._try_save()
 
-    def add_exam_record(self, record: dict) -> None:
+    def add_exam_record(self, record: dict) -> bool:
+        """追加一条成绩并落盘；返回是否保存成功（失败原因写入 last_save_error）。"""
         self.progress.add_exam_record(record)
-        try:
-            self.save()
-        except OSError:
-            pass
+        return self._try_save()
 
     def exam_history(self) -> list:
         """历史成绩，最新在前。"""
@@ -467,20 +536,50 @@ class ProgressStore:
             self.progress.created = _now()
         self.progress.updated = _now()
         target = self.path
+        # 多进程并发：若磁盘文件在本进程上次落盘后又被别的进程改过，先按指纹合并，
+        # 避免用旧快照整文件覆盖掉另一进程已保存的作答（审计 P2-05）。
+        current_stat = self._stat_target()
+        if target.exists() and current_stat != self._disk_stat:
+            disk_data = _read_json(target)
+            if isinstance(disk_data, dict):
+                try:
+                    disk = BankProgress.from_dict(disk_data)
+                except Exception:
+                    disk = None
+                if disk is not None and (disk.records or disk.exams or disk.excluded):
+                    self._merge_progress(self.progress, disk)
+                    self.progress.updated = _now()
         tmp = target.with_suffix(f".json.{os.getpid()}.tmp")
         payload = json.dumps(self.progress.to_dict(), ensure_ascii=False, indent=2)
-        tmp.write_text(payload, encoding="utf-8")
-        os.replace(tmp, target)          # 原子替换，避免半截文件
+        try:
+            tmp.write_text(payload, encoding="utf-8")
+            os.replace(tmp, target)          # 原子替换，避免半截文件
+        finally:
+            try:
+                if tmp.exists():
+                    tmp.unlink()
+            except OSError:
+                pass
+        self._disk_updated = self.progress.updated
+        self._disk_stat = self._stat_target()
         return target
 
     def reset(self) -> None:
+        """重置进度；落盘失败时回滚内存状态，避免"界面已清空、文件仍旧"（P2-07）。"""
+        snapshot = self.progress.to_dict()
         self.progress.reset()
-        self.save()
+        try:
+            self.save()
+        except Exception:
+            self.progress = BankProgress.from_dict(snapshot)
+            raise
 
     def delete(self) -> bool:
         try:
             if self.path.exists():
                 self.path.unlink()
+            self._disk_updated = ""
+            self._disk_stat = None
             return True
         except OSError:
             return False
@@ -521,14 +620,22 @@ class ProgressStore:
         if isinstance(positions, dict) and positions:
             session["positions"] = dict(positions)
         self.progress.session = session
-        self.save()
+        self._try_save()
 
     def saved_session(self) -> dict:
         return dict(self.progress.session or {})
 
     # ------------------------------------------------------------ 目录级操作
     @staticmethod
-    def list_all(directory: "Path | None" = None) -> list[dict]:
+    def _empty_row(path: Path) -> dict:
+        """损坏进度文件的统一行结构（字段与正常行一致，CLI/界面可安全读取）。"""
+        return {"key": path.stem, "name": path.stem, "broken": True,
+                "path": str(path), "done": 0, "total": 0, "right": 0, "wrong": 0,
+                "wrong_book": 0, "accuracy": 0.0, "exams": 0, "excluded": 0,
+                "active": 0, "updated": ""}
+
+    @classmethod
+    def list_all(cls, directory: "Path | None" = None) -> list[dict]:
         """列出全部题库进度摘要（供进度管理界面使用）。"""
         directory = Path(directory) if directory else progress_dir()
         out: list[dict] = []
@@ -536,24 +643,23 @@ class ProgressStore:
             return out
         for path in sorted(directory.glob("*.json")):
             data = _read_json(path)
-            if not data:
-                out.append({"key": path.stem, "name": path.stem, "broken": True,
-                            "path": str(path), "done": 0, "total": 0, "wrong": 0, "updated": ""})
+            if not isinstance(data, dict):
+                out.append(cls._empty_row(path))
                 continue
             try:
                 prog = BankProgress.from_dict(data)
             except Exception:
-                out.append({"key": path.stem, "name": path.stem, "broken": True,
-                            "path": str(path), "done": 0, "total": 0, "wrong": 0, "updated": ""})
+                out.append(cls._empty_row(path))
                 continue
             right = sum(r.right for r in prog.records.values())
             wrong = sum(r.wrong for r in prog.records.values())
             attempts = right + wrong
             out.append({
-                "key": prog.bank_key or path.stem,
+                # key 使用文件名：delete_by_key 直接拼接路径，不能信任文件内容里的 bank_key
+                "key": path.stem,
                 "name": prog.bank_name or path.stem,
                 "path": str(path),
-                "done": len(prog.records),
+                "done": min(len(prog.records), max(0, prog.question_total) or len(prog.records)),
                 "total": prog.question_total,
                 "right": right,
                 "wrong": wrong,
@@ -569,9 +675,16 @@ class ProgressStore:
 
     @staticmethod
     def delete_by_key(key: str, directory: "Path | None" = None) -> bool:
+        """按题库 key 删除进度文件；拒绝 ``..``/路径分隔符/绝对路径（审计 P3-04）。"""
         directory = Path(directory) if directory else progress_dir()
-        path = directory / f"{key}.json"
+        name = str(key or "").strip()
+        if (not name or name in (".", "..") or "/" in name or "\\" in name
+                or name.startswith(".") or ":" in name):
+            return False
+        path = (directory / f"{name}.json").resolve()
         try:
+            if path.parent != directory.resolve():
+                return False
             if path.exists():
                 path.unlink()
             return True
@@ -609,11 +722,11 @@ class BankLibrary:
             return None
         try:
             total = int(item.get("total", 0) or 0)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             total = 0
         return {"path": path,
                 "name": str(item.get("name", "") or Path(path).stem),
-                "total": max(0, total),
+                "total": max(0, min(total, 10_000_000)),
                 "last_used": str(item.get("last_used", "") or "")}
 
     def _dedupe(self) -> None:
@@ -631,13 +744,16 @@ class BankLibrary:
     @classmethod
     def load(cls, path: "Path | None" = None) -> "BankLibrary":
         p = Path(path) if path else library_path()
-        data = _read_json(p)
-        if not isinstance(data, dict):
+        try:
+            data = _read_json(p)
+            if not isinstance(data, dict):
+                return cls([], p)
+            raw = data.get("banks")
+            if not isinstance(raw, list):
+                return cls([], p)
+            return cls(raw, p)
+        except Exception:                    # 字段非法/数值溢出 → 整体降级为空库
             return cls([], p)
-        raw = data.get("banks")
-        if not isinstance(raw, list):
-            return cls([], p)
-        return cls(raw, p)
 
     def save(self) -> Path:
         self._dedupe()
@@ -712,8 +828,23 @@ def _norm_path_key(path: str) -> str:
 
 
 def _read_json(path: Path) -> "dict | None":
-    """读取 JSON，损坏时返回 None（不抛异常）。"""
+    """读取 JSON，损坏时返回 None（不抛异常）。
+
+    兼容 Windows 记事本写出的 BOM/UTF-16（审计 P3-05）：编码问题不应被当成
+    "文件损坏"，否则会被空进度覆盖。
+    """
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        data = path.read_bytes()
+    except OSError:
+        return None
+    text = ""
+    for enc in ("utf-8-sig", "utf-16", "utf-8"):
+        try:
+            text = data.decode(enc)
+            break
+        except (UnicodeDecodeError, UnicodeError):
+            continue
+    try:
+        return json.loads(text)
+    except (json.JSONDecodeError, TypeError):
         return None

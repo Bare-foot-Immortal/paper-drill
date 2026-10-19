@@ -6,8 +6,9 @@
 > **v1.3.0 起界面改为 Qt（PySide6）**：卡片式布局、深浅主题、高 DPI 缩放；
 > PySide6 不可用时自动回退 tkinter 界面，两套界面共用同一份进度与配置。
 
-- **交付形态**：Windows 单文件 exe（`dist/PaperDrill.exe`），免安装、免联网、可直接分享
-- **界面语言**：简体中文 ｜ **版本**：1.3.2 ｜ exe 体积约 90–100 MB（Qt 运行库内含）
+- **交付形态**：Windows 单文件 exe（`dist/PaperDrill.exe`），免安装、免联网、可直接分享；
+  另有可选的文件夹版打包开关（`build_exe.ps1 -Portable`，仅本地自用，**不随 Release 发布**），启动更快
+- **界面语言**：简体中文 ｜ **版本**：1.3.3 ｜ 单文件体积约 40 MB（Qt 运行库内含，v1.3.3 起由 98.8 MB 精简而来）
 - **本版定位**：练习 + 模拟考试，**不含试卷导出**（导出正式试卷请用组卷版）
 - **新增能力（v1.3.x）**：
   - **现代 Qt 界面**：左侧主导航 + 顶栏统计 + 卡片式题面；选项整行可点、判定后正确项标绿、
@@ -23,6 +24,9 @@
     快捷键提示移到页面最下方的一长条
   - **v1.3.2 图标修复**：窗口标题栏、任务栏与 exe 文件统一显示「刷题匠」图标
     （源码运行与单文件 exe 都能正确读取 `assets/PaperDrill.ico`）
+  - **v1.3.3 启动加速**：窗口先出现、题库随后载入；打包剔除用不到的 Qt 载荷
+    （98.8 MB → 39.6 MB）。窗口就绪实测：单文件 1.8–2.3 s（原 4.4–5.6 s）；
+    需要更快时可自行打文件夹版（`-Portable`，本地自用，不随 Release 发布）
 - **缺陷修复**：
   - v1.3.0 —— 勾选「单选/多选打乱选项」等触发重绘的操作会让旧选项行短暂变成顶层窗口，
     表现为屏幕"闪一下小窗"；已改为先隐藏再摘除，并加入自检项 `no_popup_flash`
@@ -31,13 +35,16 @@
     分别落盘位置窗口，切换时先存旧位置、再按指纹恢复目标位置
   - v1.3.2 —— 打开软件后窗口/任务栏不显示软件图标；已修正图标资源路径，
     并把 ico 一并打进单文件 exe 的运行时资源
+  - **2026-10 全量审计修复**（P1×5、P2×28、P3×23）：导入丢题/改答案、≥1000 题丢题、
+    PDF 兜底、配置损坏无法启动、考试作答被静默丢弃、清空进度无效、改名/并发进度回退、
+    CLI 与 GUI 口径不一致等；详见 [缺陷修复记录](docs/13-缺陷修复记录.md)
 - **沿用能力**：题库导入（Excel/CSV/TXT/JSON/Word/PDF）、练习范围与模式、选项打乱、
   试卷蓝图、一轮覆盖、模拟考试、错题本、题库删减、题库选择、进度延续
 
 | 配套版本 | 目录 | 用途 |
 |---|---|---|
 | 抽题匠 PaperForge v1.0.0 | `../PaperForge/` | 随机组卷、一轮覆盖、**导出 Word/HTML/TXT 试卷** |
-| **刷题匠 PaperDrill v1.3.2（本版）** | `./` | 实时练习、按题型练习、模拟考试、进度保留 |
+| **刷题匠 PaperDrill v1.3.3（本版）** | `./` | 实时练习、按题型练习、模拟考试、进度保留 |
 
 两版互不影响，可同时安装使用。
 
@@ -76,7 +83,7 @@
 
 详细说明见 [使用说明.md](使用说明.md)。
 
-## 界面结构（v1.3.2）
+## 界面结构（v1.3.3）
 
 ```
 ┌──────────┬─────────────────────────────────────────────────────────────┐
@@ -159,18 +166,21 @@ PaperDrill/
 - **写入安全**：临时文件 + `os.replace` 原子替换；进度文件损坏时以空进度启动；
 - **版本兼容**：v1.2.x 的进度与配置可直接被 v1.3.x 读取（新增字段缺省为空）。
 
-## 本版验证结果（v1.3.2 实测）
+## 本版验证结果（v1.3.3 实测）
 
 | 项 | 命令 / 方式 | 结果 |
 |---|---|---|
+| 2026-10 审计修复回归 | `pytest tests\test_audit_regressions.py -v` | **45 passed** |
+| 全量测试（分文件/分组） | 原 403 项 + 新增 45 项 | **448 passed** |
 | Qt 界面 + 新增回归 | `pytest tests\test_qt_controller.py tests\test_position_memory.py tests\test_qt_practice.py tests\test_qt_navigator.py tests\test_qt_icon.py tests\test_qt_shortcuts.py tests\test_qt_theme.py tests\test_qt_exam.py tests\test_qt_dialogs.py -v` | **199 passed** |
 | 领域层回归 | `pytest tests\test_paperdrill.py::TestPracticeSession ::TestProgressStore ::TestBuildItem tests\test_review_fixes.py tests\test_import_layouts.py tests\test_word_pdf_import.py -v` | **129 passed** |
 | Qt 无头自检测试 | `pytest tests\test_qt_selftest.py -v` | **11 passed**（完整闭环 ok=true） |
 | tkinter 模式切换回归 | `pytest tests\test_paperdrill.py::TestRedoAnsweredQuestions -v` | **9 passed** |
 | 代码检查 | `python -m ruff check src tools tests` | **All checks passed** |
 | Qt 无头自检 | `python -m paperdrill --qt-selftest --bank fixtures\样例题库.xlsx` | **ok=true，stage=done** |
-| 产物冒烟 | `dist\PaperDrill.exe --qt-selftest …` | **exit=0，ok=True**，窗口标题 v1.3.2 |
-| 产物版本 | exe 文件属性 | **1.3.2.0**（与界面、README 一致） |
+| 产物冒烟 | `dist\PaperDrill.exe --qt-selftest …` | **exit=0，ok=True**，窗口标题 v1.3.3 |
+| 产物版本 | exe 文件属性 | **1.3.3.0**（与界面、README 一致） |
+| **启动耗时** | 真实窗口就绪（两轮共 6 次，中位数） | **单文件 1.8–2.3 s（原 4.4–5.6 s）｜本地文件夹版 1.0–1.3 s** |
 | 产物 CLI | `dist\PaperDrill.exe --bank … --stats-only` | **exit=0，正确解析 52 题** |
 | 真实题库验收 | 308 题题库：第 50 题 → 随机 → 顺序、范围往返、错题重练（空）往返、只练未做往返、重开软件 | **全部回到原题/原位** |
 | 外观验收 | 离屏渲染 + 真实窗口实拍（浅色 / 深色 / 1024×700 / 空态 / 第 50 题跳转） | 导览 5 列、当前格高亮、内部滚动、按钮在题卡底部、底栏通栏均正常 |
@@ -204,13 +214,17 @@ powershell -ExecutionPolicy Bypass -File build_exe.ps1
 # 产物正被运行中的程序占用时，先打包到别处： -OutDir build\dist_new
 ```
 
-产物：`dist\PaperDrill.exe`（约 90–100 MB，单文件，Qt 运行库内含）。
+产物：`dist\PaperDrill.exe`（约 40 MB，单文件，Qt 运行库内含）。
+
+加 `-Portable` 会另外产出**文件夹版** `dist\PaperDrill-Portable\`（约 88 MB，需整目录使用）：
+它省掉单文件每次启动的解包步骤，窗口就绪约 1.0–1.3 s。该形态仅供本地自用，**不随 Release 发布**。
 
 > 注意：更新 exe 前必须先**关闭正在运行的 PaperDrill**，否则 `dist\PaperDrill.exe` 被占用、
 > 替换会失败（脚本会明确中止并提示 PID）。临时验证可用 `-OutDir build\dist_new` 另存一份。
 
-> 体积比 v1.2 的 tkinter 版（约 13 MB）大是必然代价：Qt 的 `Qt6Core/Qt6Gui/Qt6Widgets`
-> 及其平台插件必须一起打包。构建脚本已排除 WebEngine/Qml/Quick/Multimedia 等未用模块。
+> 体积由 v1.3.2 的 98.8 MB 降到 39.6 MB：v1.3.3 改用 `packaging\PaperDrill.spec` 按实际
+> 用到的 Qt 模块收集，不再 `--collect-all PySide6`（剔除 qml/翻译/Quick/Designer/opengl32sw 等）。
+> 单文件仍需在每次启动时解包约 76 MB 到 `%TEMP%`，这是它比文件夹版慢约 0.8 s 的原因。
 
 ## 命令行
 
@@ -228,6 +242,8 @@ PaperDrill.exe --qt-selftest  --bank 题库.xlsx --out 临时进度目录 --resu
 ## 已知边界
 
 - 多选题不设部分分；未答题按错误计分（成绩页单列）；
+- `.xls`（Excel 97-2003）与 `.doc`（Word 97-2003）旧格式不支持，请分别另存为
+  `.xlsx` / `.docx`；`.txt` 的 UTF-16「Unicode 文本」已支持；
 - 题干或选项被修改过的题目视为新题，进度从零开始；
 - 未交卷的考试答案不保留（练习作答则即时保存）；
 - 换机器携带进度需自行拷贝 `%APPDATA%\PaperDrill\progress\` 目录；
